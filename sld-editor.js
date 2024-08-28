@@ -2036,6 +2036,22 @@ let SLDEditor = class SLDEditor extends LitElement {
             ? svg `<rect width="1" height="1" fill="none"
               x="${this.mouseX}" y="${this.mouseY}" />`
             : nothing;
+        const testMapIcon = !this.placing
+            ? svg `<svg xmlns="${svgNs}" height="1" width="1" fill="black"
+          opacity="0.83" class="mapping"
+          viewBox="0 -960 960 960" x="${x + 2 - 1}" y="${y - 1}" @click="${(evt) => {
+                evt.stopPropagation();
+                this.dispatchEvent(new CustomEvent('template-map', {
+                    detail: {
+                        toBeMapped: transformer,
+                        type: mappingStatus(transformer),
+                    },
+                }));
+            }}">
+          <rect class="mapping rect" fill="white" width="902.4" height="902.4" />
+          ${mappingIcon[mappingStatus(transformer)]}
+        </svg>`
+            : nothing;
         return svg `<g class="${classMap({ transformer: true, preview })}"
         pointer-events="all"
         @mousedown=${preventDefault}
@@ -2067,6 +2083,7 @@ let SLDEditor = class SLDEditor extends LitElement {
         }}>
         ${windings.map(w => this.renderTransformerWinding(w))}
         ${clickTarget}
+        ${testMapIcon}
       </g>
       <g class="preview">${preview
             ? [

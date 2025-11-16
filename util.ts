@@ -1,4 +1,4 @@
-import { EditV2 } from '@openscd/oscd-api';
+import { AttributesV2, EditV2 } from '@omicronenergy/oscd-api';
 import { getReference } from '@openscd/oscd-scl';
 
 export const privType = 'OpenSCD-SLD-Layout';
@@ -71,22 +71,6 @@ export type Attrs = {
   kind: TransformerKind;
 };
 
-export function isTransformerKind(
-  kind: string | null
-): kind is TransformerKind {
-  return transformerKinds.includes(kind as TransformerKind);
-}
-
-export function xmlBoolean(value?: string | null) {
-  return ['true', '1'].includes(value?.trim() ?? 'false');
-}
-
-function sections(element: Element): Element[] {
-  return Array.from(
-    element.querySelectorAll(`:scope Private[type="${privType}"] > Section`)
-  );
-}
-
 function sldAttributes(element: Element, nsPrefix?: string): Element | null {
   const sldAttrs = element.querySelector(
     `:scope > Private[type="${privType}"] > SLDAttributes`
@@ -158,6 +142,12 @@ export function getSLDAttributes(element: Element, key: string): string | null {
   return sldAttributes(element)?.getAttributeNS(sldNs, key) ?? null;
 }
 
+function sections(element: Element): Element[] {
+  return Array.from(
+    element.querySelectorAll(`:scope Private[type="${privType}"] > Section`)
+  );
+}
+
 export function busSections(element: Element): Element[] {
   return sections(element).filter(
     section => getSLDAttributes(section, 'bus') === 'true'
@@ -174,53 +164,6 @@ function someBusSection(element: Element): boolean {
 
 export function isBusBar(element: Element) {
   return element.tagName === 'Bay' && someBusSection(element);
-}
-
-export function attributes(element: Element): Attrs {
-  const [x, y, w, h, rotVal, labelX, labelY] = [
-    'x',
-    'y',
-    'w',
-    'h',
-    'rot',
-    'lx',
-    'ly',
-  ].map(name => parseFloat(getSLDAttributes(element, name) ?? '0'));
-  const weight = parseInt(getSLDAttributes(element, 'weight') ?? '300', 10);
-  const pos = [x, y].map(d => Math.max(0, d)) as Point;
-  const dim = [w, h].map(d => Math.max(1, d)) as Point;
-  const label = [labelX, labelY].map(d => Math.max(0, d)) as Point;
-
-  const bus = xmlBoolean(getSLDAttributes(element, 'bus'));
-  const flip = xmlBoolean(getSLDAttributes(element, 'flip'));
-  const kindVal = getSLDAttributes(element, 'kind');
-  const kind = isTransformerKind(kindVal) ? kindVal : 'default';
-  const color = getSLDAttributes(element, 'color') || '#000';
-
-  const rot = (((rotVal % 4) + 4) % 4) as 0 | 1 | 2 | 3;
-
-  return { pos, dim, label, flip, rot, bus, weight, color, kind };
-}
-
-function pathString(...args: string[]) {
-  return args.join('/');
-}
-
-export function elementPath(element: Element, ...rest: string[]): string {
-  const pedigree = [];
-  let child = element;
-  while (child.parentElement && child.hasAttribute('name')) {
-    pedigree.unshift(child.getAttribute('name')!);
-    child = child.parentElement;
-  }
-  return pathString(...pedigree, ...rest);
-}
-
-function collinear(v0: Element, v1: Element, v2: Element) {
-  const [[x0, y0], [x1, y1], [x2, y2]] = [v0, v1, v2].map(vertex =>
-    ['x', 'y'].map(name => getSLDAttributes(vertex, name))
-  );
-  return (x0 === x1 && x1 === x2) || (y0 === y1 && y1 === y2);
 }
 
 export function removeNode(node: Element): EditV2[] {
@@ -247,66 +190,6 @@ export function removeNode(node: Element): EditV2[] {
       )}"], NeutralPoint[connectivityNode="${node.getAttribute('pathName')}"]`
     )
   ).forEach(terminal => edits.push({ node: terminal }));
-
-  return edits;
-}
-
-function reverseSection(section: Element): EditV2[] {
-  const edits = [] as EditV2[];
-
-  Array.from(section.children)
-    .reverse()
-    .forEach(vertex =>
-      edits.push({ parent: section, node: vertex, reference: null })
-    );
-
-  return edits;
-}
-
-function healSectionCut(cut: Element): EditV2[] {
-  const [x, y] = ['x', 'y'].map(name => getSLDAttributes(cut, name));
-
-  const isCut = (vertex: Element) =>
-    vertex !== cut &&
-    getSLDAttributes(vertex, 'x') === x &&
-    getSLDAttributes(vertex, 'y') === y;
-
-  const cutVertices = Array.from(
-    cut.closest('Private')!.getElementsByTagNameNS(sldNs, 'Section')
-  ).flatMap(section => Array.from(section.children).filter(isCut));
-  const cutSections = cutVertices.map(v => v.parentElement) as Element[];
-
-  if (cutSections.length > 2) return [];
-  if (cutSections.length < 2)
-    return removeNode(cut.closest('ConnectivityNode')!);
-  const [busA, busB] = cutSections.map(section =>
-    xmlBoolean(section.getAttribute('bus'))
-  );
-  if (busA !== busB) return [];
-
-  const edits = [] as EditV2[];
-  const [sectionA, sectionB] = cutSections as [Element, Element];
-  if (isCut(sectionA.firstElementChild!)) edits.push(reverseSection(sectionA));
-  const sectionBChildren = Array.from(sectionB.children);
-  if (isCut(sectionB.lastElementChild!)) sectionBChildren.reverse();
-
-  sectionBChildren
-    .slice(1)
-    .forEach(node => edits.push({ parent: sectionA, node, reference: null }));
-
-  const cutA = Array.from(sectionA.children).find(isCut);
-  const neighbourA = isCut(sectionA.firstElementChild!)
-    ? sectionA.children[1]
-    : sectionA.children[sectionA.childElementCount - 2];
-  const neighbourB = sectionBChildren[1];
-  if (
-    neighbourA &&
-    cutA &&
-    neighbourB &&
-    collinear(neighbourA, cutA, neighbourB)
-  )
-    edits.push({ node: cutA });
-  edits.push({ node: sectionB });
 
   return edits;
 }
@@ -415,6 +298,77 @@ export function uniqueName(element: Element, parent: Element): string {
   return baseName + index.toString();
 }
 
+function collinear(v0: Element, v1: Element, v2: Element) {
+  const [[x0, y0], [x1, y1], [x2, y2]] = [v0, v1, v2].map(vertex =>
+    ['x', 'y'].map(name => getSLDAttributes(vertex, name))
+  );
+  return (x0 === x1 && x1 === x2) || (y0 === y1 && y1 === y2);
+}
+
+function reverseSection(section: Element): EditV2[] {
+  const edits = [] as EditV2[];
+
+  Array.from(section.children)
+    .reverse()
+    .forEach(vertex =>
+      edits.push({ parent: section, node: vertex, reference: null })
+    );
+
+  return edits;
+}
+
+export function xmlBoolean(value?: string | null) {
+  return ['true', '1'].includes(value?.trim() ?? 'false');
+}
+
+function healSectionCut(cut: Element): EditV2[] {
+  const [x, y] = ['x', 'y'].map(name => getSLDAttributes(cut, name));
+
+  const isCut = (vertex: Element) =>
+    vertex !== cut &&
+    getSLDAttributes(vertex, 'x') === x &&
+    getSLDAttributes(vertex, 'y') === y;
+
+  const cutVertices = Array.from(
+    cut.closest('Private')!.getElementsByTagNameNS(sldNs, 'Section')
+  ).flatMap(section => Array.from(section.children).filter(isCut));
+  const cutSections = cutVertices.map(v => v.parentElement) as Element[];
+
+  if (cutSections.length > 2) return [];
+  if (cutSections.length < 2)
+    return removeNode(cut.closest('ConnectivityNode')!);
+  const [busA, busB] = cutSections.map(section =>
+    xmlBoolean(section.getAttribute('bus'))
+  );
+  if (busA !== busB) return [];
+
+  const edits = [] as EditV2[];
+  const [sectionA, sectionB] = cutSections as [Element, Element];
+  if (isCut(sectionA.firstElementChild!)) edits.push(reverseSection(sectionA));
+  const sectionBChildren = Array.from(sectionB.children);
+  if (isCut(sectionB.lastElementChild!)) sectionBChildren.reverse();
+
+  sectionBChildren
+    .slice(1)
+    .forEach(node => edits.push({ parent: sectionA, node, reference: null }));
+
+  const cutA = Array.from(sectionA.children).find(isCut);
+  const neighbourA = isCut(sectionA.firstElementChild!)
+    ? sectionA.children[1]
+    : sectionA.children[sectionA.childElementCount - 2];
+  const neighbourB = sectionBChildren[1];
+  if (
+    neighbourA &&
+    cutA &&
+    neighbourB &&
+    collinear(neighbourA, cutA, neighbourB)
+  )
+    edits.push({ node: cutA });
+  edits.push({ node: sectionB });
+
+  return edits;
+}
+
 export function reparentElement(element: Element, parent: Element): EditV2[] {
   const edits: EditV2[] = [];
   edits.push({
@@ -483,6 +437,312 @@ export function removeTerminal(terminal: Element): EditV2[] {
   return edits;
 }
 
+function pathString(...args: string[]) {
+  return args.join('/');
+}
+
+export function elementPath(element: Element, ...rest: string[]): string {
+  const pedigree = [];
+  let child = element;
+  while (child.parentElement && child.hasAttribute('name')) {
+    pedigree.unshift(child.getAttribute('name')!);
+    child = child.parentElement;
+  }
+  return pathString(...pedigree, ...rest);
+}
+
+/**
+ * This function updates child `Terminal` and `ConnectivityNode`
+ * of a given placing element. It makes sure to not keep either of those
+ * if they are not needed anymore after placing.
+ * For `ConnectivityNode` this means removing if there is at least one `Terminal`
+ * outside the placing element
+ * For `Terminal` this means removing if the `ConnectivityNode` is outside the
+ * placing element
+ */
+export function updateCNodesAndTerminals(
+  doc: XMLDocument,
+  element: Element,
+  parent: Element
+): EditV2[] {
+  const edits: EditV2[] = [];
+
+  // Make sure that grounded terminals are still correct in placing
+  if (
+    element.tagName === 'ConductingEquipment' ||
+    element.tagName === 'PowerTransformer'
+  ) {
+    Array.from(element.querySelectorAll('Terminal, NeutralPoint'))
+      .filter(terminal => terminal.getAttribute('cNodeName') !== 'grounded')
+      .forEach(terminal => edits.push(...removeTerminal(terminal)));
+
+    const groundedTerminals = Array.from(
+      element.querySelectorAll('Terminal, NeutralPoint')
+    ).filter(terminal => terminal.getAttribute('cNodeName') === 'grounded');
+    if (groundedTerminals.length > 0) {
+      const bayName = parent.closest('Bay')?.getAttribute('name');
+      if (!bayName)
+        groundedTerminals.forEach(terminal =>
+          edits.push(...removeTerminal(terminal))
+        );
+
+      let newCNode = parent.querySelector(`ConnectivityNode[name="grounded"]`);
+
+      if (!newCNode) {
+        newCNode = doc.createElementNS(
+          doc.documentElement.namespaceURI,
+          'ConnectivityNode'
+        );
+        newCNode.setAttribute('name', 'grounded');
+        newCNode.setAttribute('pathName', elementPath(parent, 'grounded'));
+
+        edits.push({
+          node: newCNode,
+          parent,
+          reference: getReference(parent, 'ConnectivityNode'),
+        });
+      }
+
+      const voltageLevelName = parent
+        .closest('VoltageLevel')
+        ?.getAttribute('name');
+      const substationName = parent
+        .closest('Substation')!
+        .getAttribute('name')!;
+      const connectivityNode = newCNode!.getAttribute('pathName');
+
+      groundedTerminals.forEach(terminal => {
+        edits.push({
+          element: terminal,
+          attributes: {
+            connectivityNode,
+            bayName,
+            voltageLevelName,
+            substationName,
+          },
+        });
+      });
+    }
+  } // Make sure to remove Terminal and ConnectivityNode that are outside placing element
+  else if (element.getRootNode() === doc) {
+    // Remove ConnectivityNode that point to any Terminal outside placing element
+    Array.from(element.getElementsByTagName('ConnectivityNode')).forEach(
+      cNode => {
+        if (
+          Array.from(
+            doc.querySelectorAll(
+              `Terminal[connectivityNode="${cNode.getAttribute('pathName')}"],
+                 NeutralPoint[connectivityNode="${cNode.getAttribute(
+                   'pathName'
+                 )}"]`
+            )
+          ).find(terminal => terminal.closest(element.tagName) !== element)
+        )
+          edits.push(...removeNode(cNode));
+      }
+    );
+    // Remove Terminal that point to any ConnectivityNode outside placing element
+    Array.from(element.querySelectorAll('Terminal, NeutralPoint')).forEach(
+      terminal => {
+        const cNode = doc.querySelector(
+          `ConnectivityNode[pathName="${terminal.getAttribute(
+            'connectivityNode'
+          )}"]`
+        );
+        if (cNode && cNode.closest(element.tagName) !== element)
+          edits.push(...removeNode(cNode));
+      }
+    );
+  }
+
+  return edits;
+}
+
+export function isTransformerKind(
+  kind: string | null
+): kind is TransformerKind {
+  return transformerKinds.includes(kind as TransformerKind);
+}
+
+export function attributes(element: Element): Attrs {
+  const [x, y, w, h, rotVal, labelX, labelY] = [
+    'x',
+    'y',
+    'w',
+    'h',
+    'rot',
+    'lx',
+    'ly',
+  ].map(name => parseFloat(getSLDAttributes(element, name) ?? '0'));
+  const weight = parseInt(getSLDAttributes(element, 'weight') ?? '300', 10);
+  const pos = [x, y].map(d => Math.max(0, d)) as Point;
+  const dim = [w, h].map(d => Math.max(1, d)) as Point;
+  const label = [labelX, labelY].map(d => Math.max(0, d)) as Point;
+
+  const bus = xmlBoolean(getSLDAttributes(element, 'bus'));
+  const flip = xmlBoolean(getSLDAttributes(element, 'flip'));
+  const kindVal = getSLDAttributes(element, 'kind');
+  const kind = isTransformerKind(kindVal) ? kindVal : 'default';
+  const color = getSLDAttributes(element, 'color') || '#000';
+
+  const rot = (((rotVal % 4) + 4) % 4) as 0 | 1 | 2 | 3;
+
+  return { pos, dim, label, flip, rot, bus, weight, color, kind };
+}
+
+export function updatePositionAndLabelPosition(
+  element: Element,
+  x: number,
+  y: number,
+  nsp: string
+) {
+  const {
+    pos: [oldX, oldY],
+    label: [oldLX, oldLY],
+    rot,
+  } = attributes(element);
+
+  const dx = x - oldX;
+  const dy = y - oldY;
+
+  let lx = oldLX;
+  let ly = oldLY;
+  if (
+    element.tagName === 'ConductingEquipment' &&
+    !getSLDAttributes(element, 'lx') &&
+    rot % 2 === 0
+  ) {
+    lx += 1;
+    ly += 1;
+  }
+  if (
+    element.tagName === 'PowerTransformer' &&
+    !getSLDAttributes(element, 'lx')
+  ) {
+    if (rot < 2) lx += 1.5;
+    else {
+      lx -= 2;
+      ly += 2;
+    }
+  }
+
+  return updateSLDAttributes(element, nsp, {
+    x: x.toString(),
+    y: y.toString(),
+    lx: (lx + dx).toString(),
+    ly: (ly + dy).toString(),
+  });
+}
+
+export function createNewSubstation(doc: XMLDocument, nsp: string): EditV2 {
+  const parent = doc.documentElement;
+  const node = doc.createElementNS(
+    doc.documentElement.namespaceURI,
+    'Substation'
+  );
+  const reference = getReference(parent, 'Substation');
+
+  let index = 1;
+  while (doc.querySelector(`:root > Substation[name="S${index}"]`)) index += 1;
+
+  node.setAttribute('name', `S${index}`);
+  setSLDAttributes(node, nsp, { w: '50', h: '25' });
+
+  return { parent, node, reference };
+}
+
+export function repositionChildText(
+  element: Element,
+  x: number,
+  y: number,
+  nsp: string
+): EditV2[] {
+  const {
+    pos: [oldX, oldY],
+  } = attributes(element);
+
+  const dx = x - oldX;
+  const dy = y - oldY;
+
+  const edits: EditV2[] = [];
+  Array.from(element.querySelectorAll('Text')).forEach(text => {
+    const {
+      label: [textLX, textLY],
+    } = attributes(text);
+
+    const newAttr = {
+      lx: (textLX + dx).toString(),
+      ly: (textLY + dy).toString(),
+    };
+    edits.push(updateSLDAttributes(text, nsp, newAttr));
+  });
+
+  return edits;
+}
+
+export function updateDescendant(
+  element: Element,
+  x: number,
+  y: number,
+  nsp: string
+): EditV2[] {
+  const {
+    pos: [oldX, oldY],
+  } = attributes(element);
+
+  const dx = x - oldX;
+  const dy = y - oldY;
+
+  return Array.from(
+    element.querySelectorAll(
+      'Bay, ConductingEquipment, PowerTransformer, Vertex'
+    )
+  ).map(descendant => {
+    const {
+      pos: [descX, descY],
+      label: [descLX, descLY],
+    } = attributes(descendant);
+    const newAttributes: AttributesV2 = {
+      x: (descX + dx).toString(),
+      y: (descY + dy).toString(),
+    };
+    if (descendant.localName !== 'Vertex') {
+      newAttributes.lx = (descLX + dx).toString();
+      newAttributes.ly = (descLY + dy).toString();
+    }
+    return updateSLDAttributes(descendant, nsp, newAttributes);
+  });
+}
+
+export function placeElement(
+  doc: XMLDocument,
+  parent: Element,
+  element: Element,
+  x: number,
+  y: number,
+  nsp: string
+): EditV2[] {
+  const edits: EditV2[] = [];
+
+  if (element.parentElement !== parent)
+    edits.push(...reparentElement(element, parent));
+
+  // Update position and label position
+  if (element.localName !== 'Vertex')
+    edits.push(updatePositionAndLabelPosition(element, x, y, nsp));
+
+  // Update text children
+  edits.push(...repositionChildText(element, x, y, nsp));
+
+  // Update positions of descendants
+  edits.push(...updateDescendant(element, x, y, nsp));
+
+  // Handle terminals and connectivity nodes
+  edits.push(...updateCNodesAndTerminals(doc, element, parent));
+
+  return edits;
+}
+
 export function connectionStartPoints(equipment: Element): {
   T1: [Point, Point];
   T2: [Point, Point];
@@ -524,41 +784,6 @@ export function connectionStartPoints(equipment: Element): {
   return { T1, T2 };
 }
 
-export type ResizeDetail = {
-  w: number;
-  h: number;
-  element: Element;
-};
-export type ResizeEvent = CustomEvent<ResizeDetail>;
-export function newResizeEvent(detail: ResizeDetail): ResizeEvent {
-  return new CustomEvent('oscd-sld-resize', {
-    bubbles: true,
-    composed: true,
-    detail,
-  });
-}
-
-export type ResizeTLDetail = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  element: Element;
-};
-export type ResizeTLEvent = CustomEvent<ResizeTLDetail>;
-export function newResizeTLEvent(detail: ResizeTLDetail): ResizeTLEvent {
-  return new CustomEvent('oscd-sld-resize-tl', {
-    bubbles: true,
-    composed: true,
-    detail,
-  });
-}
-
-export type PlaceLabelDetail = {
-  x: number;
-  y: number;
-  element: Element;
-};
 export type PlaceDetail = {
   x: number;
   y: number;
@@ -574,12 +799,15 @@ export function newPlaceEvent(detail: PlaceDetail): PlaceEvent {
   });
 }
 
-export type PlaceLabelEvent = CustomEvent<PlaceLabelDetail>;
-export function newPlaceLabelEvent(detail: PlaceLabelDetail): PlaceLabelEvent {
-  return new CustomEvent('oscd-sld-place-label', {
+export type ResetPlaceDetail = {
+  element: Element;
+};
+export type ResetPlaceEvent = CustomEvent<ResetPlaceDetail>;
+export function newResetPlaceEvent(element: Element): ResetPlaceEvent {
+  return new CustomEvent('oscd-sld-reset-place', {
     bubbles: true,
     composed: true,
-    detail,
+    detail: { element },
   });
 }
 
@@ -590,36 +818,7 @@ export type ConnectDetail = {
   to: Element;
   toTerminal?: 'T1' | 'T2' | 'N1' | 'N2';
 };
-export type ConnectEvent = CustomEvent<ConnectDetail>;
-export function newConnectEvent(detail: ConnectDetail): ConnectEvent {
-  return new CustomEvent('oscd-sld-connect', {
-    bubbles: true,
-    composed: true,
-    detail,
-  });
-}
-export type StartEvent = CustomEvent<Element>;
-export function newRotateEvent(detail: Element): StartEvent {
-  return new CustomEvent('oscd-sld-rotate', {
-    bubbles: true,
-    composed: true,
-    detail,
-  });
-}
-export function newStartResizeTLEvent(detail: Element): StartEvent {
-  return new CustomEvent('oscd-sld-start-resize-tl', {
-    bubbles: true,
-    composed: true,
-    detail,
-  });
-}
-export function newStartResizeBREvent(detail: Element): StartEvent {
-  return new CustomEvent('oscd-sld-start-resize-br', {
-    bubbles: true,
-    composed: true,
-    detail,
-  });
-}
+
 export type StartPlaceDetail = {
   element: Element;
   offset: Point;
@@ -635,45 +834,17 @@ export function newStartPlaceEvent(
     detail: { element, offset },
   });
 }
-export function newStartPlaceLabelEvent(
-  element: Element,
-  offset: Point = [0, 0]
-): StartPlaceEvent {
-  return new CustomEvent('oscd-sld-start-place-label', {
-    bubbles: true,
-    composed: true,
-    detail: { element, offset },
-  });
-}
 export type StartConnectDetail = {
   from: Element;
   fromTerminal: 'T1' | 'T2' | 'N1' | 'N2';
   path: Point[];
 };
-export type StartConnectEvent = CustomEvent<StartConnectDetail>;
-export function newStartConnectEvent(
-  detail: StartConnectDetail
-): StartConnectEvent {
-  return new CustomEvent('oscd-sld-start-connect', {
-    bubbles: true,
-    composed: true,
-    detail,
-  });
-}
 
 declare global {
   interface ElementEventMap {
-    ['oscd-sld-resize']: ResizeEvent;
-    ['oscd-sld-resize-tl']: ResizeTLEvent;
-    ['oscd-sld-place']: PlaceEvent;
-    ['oscd-sld-place-label']: PlaceLabelEvent;
-    ['oscd-sld-connect']: ConnectEvent;
-    ['oscd-sld-rotate']: StartEvent;
-    ['oscd-sld-start-resize-br']: StartEvent;
-    ['oscd-sld-start-resize-tl']: StartEvent;
     ['oscd-sld-start-place']: StartPlaceEvent;
-    ['oscd-sld-start-place-label']: StartPlaceEvent;
-    ['oscd-sld-start-connect']: StartConnectEvent;
+    ['oscd-sld-place']: PlaceEvent;
+    ['oscd-sld-reset-placing']: ResetPlaceEvent;
   }
 }
 

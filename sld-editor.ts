@@ -4,7 +4,7 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 import { classMap } from 'lit/directives/class-map.js';
 import { createRef, Ref, ref } from 'lit/directives/ref.js';
 
-import { EditV2 } from '@openscd/oscd-api';
+import { EditV2, SetAttributes, Update } from '@openscd/oscd-api';
 import { newEditEventV2 } from '@openscd/oscd-api/utils.js';
 
 import type { Dialog } from '@material/mwc-dialog';
@@ -35,35 +35,32 @@ import {
 } from './icons.js';
 import {
   attributes,
+  busSections,
+  ConnectDetail,
   connectionStartPoints,
   elementPath,
   getSLDAttributes,
   isBusBar,
   isEqType,
-  newConnectEvent,
   newPlaceEvent,
-  newPlaceLabelEvent,
-  newResizeEvent,
-  newResizeTLEvent,
-  newRotateEvent,
-  newStartConnectEvent,
+  newResetPlaceEvent,
   newStartPlaceEvent,
-  newStartPlaceLabelEvent,
-  newStartResizeBREvent,
-  newStartResizeTLEvent,
   Point,
   prettyPrint,
   privType,
   removeNode,
   removeTerminal,
+  reparentElement,
   ringedEqTypes,
   robotoDataURL,
   setSLDAttributes,
   singleTerminal,
   sldNs,
+  StartConnectDetail,
   svgNs,
   uniqueName,
   updateSLDAttributes,
+  updateDescendant,
   uuid,
   xlinkNs,
   xmlBoolean,
@@ -340,6 +337,52 @@ function renderMenuHeader(element: Element) {
   </mwc-list-item>`;
 }
 
+function cutSectionAt(
+  section: Element,
+  index: number,
+  [x, y]: Point,
+  nsPrefix: string
+): EditV2[] {
+  const parent = section.parentElement!;
+  const edits = [] as EditV2[];
+  const vertices = Array.from(section.getElementsByTagNameNS(sldNs, 'Vertex'));
+  const vertexAtXY = vertices.find(
+    ve =>
+      getSLDAttributes(ve, 'x') === x.toString() &&
+      getSLDAttributes(ve, 'y') === y.toString()
+  );
+
+  if (
+    vertexAtXY === vertices[0] ||
+    vertexAtXY === vertices[vertices.length - 1]
+  ) {
+    return [];
+  }
+
+  const newSection = section.cloneNode(true) as Element;
+  Array.from(newSection.getElementsByTagNameNS(sldNs, 'Vertex'))
+    .slice(0, index + 1)
+    .forEach(vertex => vertex.remove());
+  const v = vertices[index].cloneNode() as Element;
+  setSLDAttributes(v, nsPrefix, { x: x.toString(), y: y.toString() });
+  v.removeAttributeNS(sldNs, 'uuid');
+  newSection.prepend(v);
+  edits.push({
+    node: newSection,
+    parent,
+    reference: section.nextElementSibling,
+  });
+
+  vertices.slice(index + 1).forEach(vertex => edits.push({ node: vertex }));
+
+  if (!vertexAtXY) {
+    const v2 = v.cloneNode();
+    edits.push({ node: v2, parent: section, reference: null });
+  }
+
+  return edits;
+}
+
 @customElement('sld-editor')
 /* eslint-disable-next-line @typescript-eslint/no-unused-vars */
 export class SLDEditor extends LitElement {
@@ -356,7 +399,7 @@ export class SLDEditor extends LitElement {
   gridSize = 32;
 
   @property()
-  nsp = 'esld';
+  nsp = 'esldoscd';
 
   @property()
   resizingBR?: Element;
@@ -432,6 +475,305 @@ export class SLDEditor extends LitElement {
 
   coordinatesRef: Ref<HTMLElement> = createRef();
 
+  reset() {
+    this.resizingBR = undefined;
+    this.resizingTL = undefined;
+    this.placingLabel = undefined;
+    this.connecting = undefined;
+  }
+
+  rotateElement(element: Element) {
+    const { rot } = attributes(element);
+    const edits = [
+      updateSLDAttributes(element, this.nsp, {
+        rot: ((rot + 1) % 4).toString(),
+      }),
+    ];
+    if (
+      element.tagName === 'ConductingEquipment' ||
+      element.tagName === 'PowerTransformer'
+    ) {
+      Array.from(element.querySelectorAll('Terminal, NeutralPoint'))
+        .filter(terminal => terminal.getAttribute('cNodeName') !== 'grounded')
+        .forEach(terminal => edits.push(...removeTerminal(terminal)));
+    }
+    this.dispatchEvent(newEditEventV2(edits));
+  }
+
+  startConnecting(detail: StartConnectDetail) {
+    this.reset();
+    this.connecting = detail;
+  }
+
+  connectEquipment({
+    from,
+    fromTerminal,
+    to,
+    toTerminal,
+    path,
+  }: ConnectDetail) {
+    if (
+      from.tagName === 'TransformerWinding' &&
+      to.tagName === 'TransformerWinding'
+    )
+      return;
+
+    const edits = [] as EditV2[];
+    let cNode: Element;
+    let connectivityNode: string;
+    let cNodeName: string;
+    let priv: Element;
+    if (to.tagName !== 'ConnectivityNode') {
+      cNode = this.doc.createElementNS(
+        this.doc.documentElement.namespaceURI,
+        'ConnectivityNode'
+      );
+      cNode.setAttribute('name', 'L1');
+      const bay = from.closest('Bay') || to.closest('Bay')!;
+      edits.push(...reparentElement(cNode, bay));
+      connectivityNode = (
+        edits.find(
+          e =>
+            e && 'attributes' in e && e.attributes && 'pathName' in e.attributes
+        ) as SetAttributes | undefined
+      )?.attributes?.pathName as string;
+      cNodeName =
+        ((
+          edits.find(
+            e =>
+              e && 'attributes' in e && e.attributes && 'name' in e.attributes
+          ) as Update | undefined
+        )?.attributes.name as string | undefined) ??
+        cNode.getAttribute('name')!;
+      priv = this.doc.createElementNS(
+        this.doc.documentElement.namespaceURI,
+        'Private'
+      );
+      priv.setAttribute('type', privType);
+      edits.push({
+        parent: cNode,
+        node: priv,
+        reference: getReference(cNode, 'Private'),
+      });
+    } else {
+      cNode = to;
+      connectivityNode = cNode.getAttribute('pathName')!;
+      cNodeName = cNode.getAttribute('name')!;
+      priv = cNode.querySelector(`Private[type="${privType}"]`)!;
+    }
+
+    const section = this.doc.createElementNS(sldNs, `${this.nsp}:Section`);
+    edits.push({ parent: priv!, node: section, reference: null });
+    const fromTermUUID = uuid();
+    const toTermUUID = uuid();
+    path.forEach(([x, y], i) => {
+      const vertex = this.doc.createElementNS(sldNs, `${this.nsp}:Vertex`);
+      setSLDAttributes(vertex, this.nsp, { x: x.toString(), y: y.toString() });
+      if (i === 0) setSLDAttributes(vertex, this.nsp, { uuid: fromTermUUID });
+      else if (i === path.length - 1 && to.tagName !== 'ConnectivityNode')
+        setSLDAttributes(vertex, this.nsp, { uuid: toTermUUID });
+      edits.push({ parent: section, node: vertex, reference: null });
+    });
+
+    if (to.tagName === 'ConnectivityNode') {
+      const [x, y] = path[path.length - 1];
+      Array.from(priv.getElementsByTagNameNS(sldNs, 'Section')).find(s => {
+        const sectionPath = Array.from(
+          s.getElementsByTagNameNS(sldNs, 'Vertex')
+        ).map(v => attributes(v).pos);
+        for (let i = 0; i < sectionPath.length - 1; i += 1) {
+          const [x0, y0] = sectionPath[i];
+          const [x1, y1] = sectionPath[i + 1];
+          if (
+            (y0 === y &&
+              y === y1 &&
+              ((x0 < x && x < x1) || (x1 < x && x < x0))) ||
+            (x0 === x &&
+              x === x1 &&
+              ((y0 < y && y < y1) || (y1 < y && y < y0))) ||
+            (y0 === y && x0 === x)
+          ) {
+            edits.push(cutSectionAt(s, i, [x, y], this.nsp));
+            return true;
+          }
+        }
+        return false;
+      });
+    }
+
+    const [substationName, voltageLevelName, bayName] = connectivityNode.split(
+      '/',
+      3
+    );
+    const fromTagName = fromTerminal.startsWith('T')
+      ? 'Terminal'
+      : 'NeutralPoint';
+    const fromTermElement = this.doc.createElementNS(
+      this.doc.documentElement.namespaceURI,
+      fromTagName
+    );
+    setSLDAttributes(fromTermElement, this.nsp, { uuid: fromTermUUID });
+    fromTermElement.setAttribute('name', fromTerminal);
+    fromTermElement.setAttribute('connectivityNode', connectivityNode);
+    fromTermElement.setAttribute('substationName', substationName);
+    fromTermElement.setAttribute('voltageLevelName', voltageLevelName);
+    fromTermElement.setAttribute('bayName', bayName);
+    fromTermElement.setAttribute('cNodeName', cNodeName);
+    edits.push({
+      node: fromTermElement,
+      parent: from,
+      reference: getReference(from, fromTagName),
+    });
+    if (to.tagName === 'ConductingEquipment') {
+      const toTagName = toTerminal!.startsWith('T')
+        ? 'Terminal'
+        : 'NeutralPoint';
+      const toTermElement = this.doc.createElementNS(
+        this.doc.documentElement.namespaceURI,
+        toTagName
+      );
+      setSLDAttributes(toTermElement, this.nsp, { uuid: toTermUUID });
+      toTermElement.setAttribute('name', toTerminal!);
+      toTermElement.setAttribute('connectivityNode', connectivityNode);
+      toTermElement.setAttribute('substationName', substationName);
+      toTermElement.setAttribute('voltageLevelName', voltageLevelName);
+      toTermElement.setAttribute('bayName', bayName);
+      toTermElement.setAttribute('cNodeName', cNodeName);
+      edits.push({
+        node: toTermElement,
+        parent: to,
+        reference: getReference(to, toTagName),
+      });
+    }
+    this.reset();
+    this.dispatchEvent(newEditEventV2(edits));
+  }
+
+  placeNewContainer(
+    element: Element,
+    parent: Element,
+    x: number,
+    y: number
+  ): void {
+    const edits: EditV2[] = [];
+
+    const {
+      pos: [oldX, oldY],
+      label: [oldLX, oldLY],
+    } = attributes(element);
+    const lx = oldLX;
+    const ly = oldLY;
+    const dx = x - oldX;
+    const dy = y - oldY;
+
+    const addToScl = reparentElement(element, parent);
+    const place = updateSLDAttributes(element, this.nsp, {
+      x: x.toString(),
+      y: y.toString(),
+      lx: (lx + dx).toString(),
+      ly: (ly + dy).toString(),
+    });
+    edits.push(...addToScl, place);
+
+    // In case New Container is a BusBar
+    edits.push(...updateDescendant(element, x, y, this.nsp));
+
+    this.dispatchEvent(newEditEventV2(edits));
+    this.startResizingBottomRight(element);
+    this.dispatchEvent(newResetPlaceEvent(element));
+  }
+
+  startPlacingLabel(element: Element | undefined, offset: Point = [0, 0]) {
+    this.reset();
+    this.placingLabel = element;
+    this.placingOffset = offset;
+  }
+
+  placeLabel(element: Element, x: number, y: number) {
+    const editV2 = updateSLDAttributes(element, this.nsp, {
+      lx: x.toString(),
+      ly: y.toString(),
+    });
+
+    this.dispatchEvent(newEditEventV2(editV2));
+    this.reset();
+  }
+
+  resizeContainer(element: Element, w: number, h: number) {
+    const resize = updateSLDAttributes(element, this.nsp, {
+      w: w.toString(),
+      h: h.toString(),
+    });
+    this.dispatchEvent(newEditEventV2(resize));
+    this.reset();
+  }
+
+  resizeBusBar(element: Element, x: number, y: number) {
+    const edits: EditV2[] = [];
+
+    const bay = element.closest('Bay')!;
+    const sections = busSections(bay);
+    const section = sections[0];
+    const vertex = section.querySelector('Vertex')!;
+    const lastSection = sections[sections.length - 1];
+    const lastVertex = lastSection.querySelector('Vertex:last-of-type')!;
+    const {
+      pos: [x1, y1],
+    } = attributes(vertex);
+    const w = x - x1 + 1;
+    const h = y - y1 + 1;
+    if (isBusBar(bay)) {
+      edits.push(...removeNode(section.closest('ConnectivityNode')!));
+
+      edits.push(
+        updateSLDAttributes(lastVertex, this.nsp, {
+          x: x.toString(),
+          y: y.toString(),
+        })
+      );
+      edits.push(
+        updateSLDAttributes(bay, this.nsp, {
+          w: w.toString(),
+          h: h.toString(),
+        })
+      );
+    }
+
+    this.dispatchEvent(newEditEventV2(edits));
+    this.reset();
+  }
+
+  resizeContainerTL(
+    element: Element,
+    x: number,
+    y: number,
+    w: number,
+    h: number
+  ) {
+    const {
+      pos: [oldX, oldY],
+      label: [oldLX, oldLY],
+    } = attributes(element);
+    let lx = oldLX;
+    let ly = oldLY;
+    if (lx === oldX && ly === oldY) {
+      lx += x - oldX;
+      ly += y - oldY;
+    }
+
+    const resize = updateSLDAttributes(element, this.nsp, {
+      x: x.toString(),
+      y: y.toString(),
+      w: w.toString(),
+      h: h.toString(),
+      lx: lx.toString(),
+      ly: ly.toString(),
+    });
+
+    this.dispatchEvent(newEditEventV2(resize));
+    this.reset();
+  }
+
   positionCoordinates(e: MouseEvent) {
     const coordinatesDiv = this.coordinatesRef?.value;
     if (coordinatesDiv) {
@@ -469,15 +811,15 @@ export class SLDEditor extends LitElement {
 
     const containingParent =
       element.tagName === 'VoltageLevel' ||
-      element.tagName === 'PowerTransformer'
+        element.tagName === 'PowerTransformer'
         ? containsRect(this.substation, x, y, w, h)
         : Array.from(
-            this.substation.querySelectorAll(
-              parentTags[element.tagName]!.join(',')
-            )
-          ).find(
-            parent => !isBusBar(parent) && containsRect(parent, x, y, w, h)
-          );
+          this.substation.querySelectorAll(
+            parentTags[element.tagName]!.join(',')
+          )
+        ).find(
+          parent => !isBusBar(parent) && containsRect(parent, x, y, w, h)
+        );
     if (containingParent) return true;
     return false;
   }
@@ -575,8 +917,21 @@ export class SLDEditor extends LitElement {
     return [x, y];
   }
 
-  handleKeydown = ({ key }: KeyboardEvent) => {
-    if (key === 'Escape') this.menu = undefined;
+  startResizingBottomRight(element: Element | undefined) {
+    this.reset();
+    this.resizingBR = element;
+  }
+
+  startResizingTopLeft(element: Element | undefined) {
+    this.reset();
+    this.resizingTL = element;
+  }
+
+  handleKeydown = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      this.menu = undefined;
+      this.reset();
+    }
   };
 
   handleClick = (e: MouseEvent) => {
@@ -837,7 +1192,7 @@ export class SLDEditor extends LitElement {
           <mwc-icon slot="graphic">rotate_90_degrees_cw</mwc-icon>
         </mwc-list-item>`,
         handler: () => {
-          this.dispatchEvent(newRotateEvent(transformer));
+          this.rotateElement(transformer);
         },
       },
       {
@@ -871,23 +1226,23 @@ export class SLDEditor extends LitElement {
           <span>Move Label</span>
           <mwc-icon slot="graphic">text_rotation_none</mwc-icon>
         </mwc-list-item>`,
-        handler: () => this.dispatchEvent(newStartPlaceLabelEvent(transformer)),
+        handler: () => this.startPlacingLabel(transformer),
       },
       text
         ? {
-            content: html`<mwc-list-item graphic="icon">
+          content: html`<mwc-list-item graphic="icon">
               <span>Delete Text</span>
               <mwc-icon slot="graphic">format_strikethrough</mwc-icon>
             </mwc-list-item>`,
-            handler: () => this.dispatchEvent(newEditEventV2({ node: text })),
-          }
+          handler: () => this.dispatchEvent(newEditEventV2({ node: text })),
+        }
         : {
-            content: html`<mwc-list-item graphic="icon">
+          content: html`<mwc-list-item graphic="icon">
               <span>Add Text</span>
               <mwc-icon slot="graphic">title</mwc-icon>
             </mwc-list-item>`,
-            handler: () => this.addTextTo(transformer),
-          },
+          handler: () => this.addTextTo(transformer),
+        },
       {
         content: html`<mwc-list-item graphic="icon">
           <span>Edit</span>
@@ -943,7 +1298,7 @@ export class SLDEditor extends LitElement {
           <mwc-icon slot="graphic">rotate_90_degrees_cw</mwc-icon>
         </mwc-list-item>`,
         handler: () => {
-          this.dispatchEvent(newRotateEvent(equipment));
+          this.rotateElement(equipment);
         },
       },
       {
@@ -974,24 +1329,24 @@ export class SLDEditor extends LitElement {
           <span>Move Label</span>
           <mwc-icon slot="graphic">text_rotation_none</mwc-icon>
         </mwc-list-item>`,
-        handler: () => this.dispatchEvent(newStartPlaceLabelEvent(equipment)),
+        handler: () => this.startPlacingLabel(equipment),
       },
       textElement
         ? {
-            content: html`<mwc-list-item graphic="icon">
+          content: html`<mwc-list-item graphic="icon">
               <span>Remove Text</span>
               <mwc-icon slot="graphic">format_strikethrough</mwc-icon>
             </mwc-list-item>`,
-            handler: () =>
-              this.dispatchEvent(newEditEventV2({ node: textElement })),
-          }
+          handler: () =>
+            this.dispatchEvent(newEditEventV2({ node: textElement })),
+        }
         : {
-            content: html`<mwc-list-item graphic="icon">
+          content: html`<mwc-list-item graphic="icon">
               <span>Add Text</span>
               <mwc-icon slot="graphic">title</mwc-icon>
             </mwc-list-item>`,
-            handler: () => this.addTextTo(equipment),
-          },
+          handler: () => this.addTextTo(equipment),
+        },
 
       {
         content: html`<mwc-list-item graphic="icon">
@@ -1065,13 +1420,11 @@ export class SLDEditor extends LitElement {
       items.unshift(
         {
           handler: () =>
-            this.dispatchEvent(
-              newStartConnectEvent({
-                from: equipment,
-                fromTerminal: 'T2',
-                path: connectionStartPoints(equipment).T2,
-              })
-            ),
+            this.startConnecting({
+              from: equipment,
+              fromTerminal: 'T2',
+              path: connectionStartPoints(equipment).T2,
+            }),
           content: item('connect', false),
         },
         {
@@ -1090,13 +1443,11 @@ export class SLDEditor extends LitElement {
       items.unshift(
         {
           handler: () =>
-            this.dispatchEvent(
-              newStartConnectEvent({
-                from: equipment,
-                fromTerminal: 'T1',
-                path: connectionStartPoints(equipment).T1,
-              })
-            ),
+            this.startConnecting({
+              from: equipment,
+              fromTerminal: 'T1',
+              path: connectionStartPoints(equipment).T1,
+            }),
           content: item('connect', true),
         },
         {
@@ -1127,7 +1478,7 @@ export class SLDEditor extends LitElement {
             ${resizeBRPath}
           </svg>
         </mwc-list-item>`,
-        handler: () => this.dispatchEvent(newStartResizeBREvent(busBar)),
+        handler: () => this.startResizingBottomRight(busBar),
       },
       {
         content: html`<mwc-list-item graphic="icon">
@@ -1149,23 +1500,23 @@ export class SLDEditor extends LitElement {
           <span>Move Label</span>
           <mwc-icon slot="graphic">text_rotation_none</mwc-icon>
         </mwc-list-item>`,
-        handler: () => this.dispatchEvent(newStartPlaceLabelEvent(busBar)),
+        handler: () => this.startPlacingLabel(busBar),
       },
       text
         ? {
-            content: html`<mwc-list-item graphic="icon">
+          content: html`<mwc-list-item graphic="icon">
               <span>Remove Text</span>
               <mwc-icon slot="graphic">format_strikethrough</mwc-icon>
             </mwc-list-item>`,
-            handler: () => this.dispatchEvent(newEditEventV2({ node: text })),
-          }
+          handler: () => this.dispatchEvent(newEditEventV2({ node: text })),
+        }
         : {
-            content: html`<mwc-list-item graphic="icon">
+          content: html`<mwc-list-item graphic="icon">
               <span>Add Text</span>
               <mwc-icon slot="graphic">title</mwc-icon>
             </mwc-list-item>`,
-            handler: () => this.addTextTo(busBar),
-          },
+          handler: () => this.addTextTo(busBar),
+        },
 
       {
         content: html`<mwc-list-item graphic="icon">
@@ -1210,7 +1561,7 @@ export class SLDEditor extends LitElement {
             ${resizeBRPath}
           </svg>
         </mwc-list-item>`,
-        handler: () => this.dispatchEvent(newStartResizeBREvent(bayOrVL)),
+        handler: () => this.startResizingBottomRight(bayOrVL),
       },
       {
         content: html`<mwc-list-item graphic="icon">
@@ -1242,23 +1593,23 @@ export class SLDEditor extends LitElement {
           <span>Move Label</span>
           <mwc-icon slot="graphic">text_rotation_none</mwc-icon>
         </mwc-list-item>`,
-        handler: () => this.dispatchEvent(newStartPlaceLabelEvent(bayOrVL)),
+        handler: () => this.startPlacingLabel(bayOrVL),
       },
       text
         ? {
-            content: html`<mwc-list-item graphic="icon">
+          content: html`<mwc-list-item graphic="icon">
               <span>Remove Text</span>
               <mwc-icon slot="graphic">format_strikethrough</mwc-icon>
             </mwc-list-item>`,
-            handler: () => this.dispatchEvent(newEditEventV2({ node: text })),
-          }
+          handler: () => this.dispatchEvent(newEditEventV2({ node: text })),
+        }
         : {
-            content: html`<mwc-list-item graphic="icon">
+          content: html`<mwc-list-item graphic="icon">
               <span>Add Text</span>
               <mwc-icon slot="graphic">title</mwc-icon>
             </mwc-list-item>`,
-            handler: () => this.addTextTo(bayOrVL),
-          },
+          handler: () => this.addTextTo(bayOrVL),
+        },
 
       {
         content: html`<mwc-list-item graphic="icon">
@@ -1316,7 +1667,7 @@ export class SLDEditor extends LitElement {
           <mwc-icon slot="graphic">rotate_90_degrees_cw</mwc-icon>
         </mwc-list-item>`,
         handler: () => {
-          this.dispatchEvent(newRotateEvent(text));
+          this.rotateElement(text);
         },
       },
       {
@@ -1332,7 +1683,7 @@ export class SLDEditor extends LitElement {
             ${movePath}
           </svg>
         </mwc-list-item>`,
-        handler: () => this.dispatchEvent(newStartPlaceLabelEvent(text)),
+        handler: () => this.startPlacingLabel(text),
       },
       {
         content: html`<mwc-list-item graphic="icon">
@@ -1464,8 +1815,8 @@ export class SLDEditor extends LitElement {
 
     const headerHeight =
       element.hasAttribute('desc') ||
-      element.hasAttribute('type') ||
-      (element.tagName === 'Text' && element.textContent)
+        element.hasAttribute('type') ||
+        (element.tagName === 'Text' && element.textContent)
         ? 73
         : 57;
 
@@ -1473,7 +1824,7 @@ export class SLDEditor extends LitElement {
       <menu
         id="sld-context-menu"
         style="top: ${this.menu.top - headerHeight}px; left: ${this.menu
-          .left}px;"
+        .left}px;"
         ${ref(async (menu?: Element) => {
           if (!(menu instanceof HTMLElement)) return;
           await this.updateComplete;
@@ -1494,9 +1845,9 @@ export class SLDEditor extends LitElement {
       >
         <mwc-list
           @selected=${({ detail: { index } }: SingleSelectedEvent) => {
-            items.filter(item => item.handler)[index]?.handler?.();
-            this.menu = undefined;
-          }}
+        items.filter(item => item.handler)[index]?.handler?.();
+        this.menu = undefined;
+      }}
         >
           ${items.map(i => i.content)}
         </mwc-list>
@@ -1522,10 +1873,10 @@ export class SLDEditor extends LitElement {
     const placingLabelTarget = this.placingLabel
       ? svg`<rect width="100%" height="100%" fill="url(#halfgrid)"
       @click=${() => {
-        const element = this.placingLabel!;
-        const [x, y] = this.renderedLabelPosition(element);
-        this.dispatchEvent(newPlaceLabelEvent({ element, x, y }));
-      }}
+          const element = this.placingLabel!;
+          const [x, y] = this.renderedLabelPosition(element);
+          this.placeLabel(element, x, y);
+        }}
       />`
       : nothing;
 
@@ -1644,22 +1995,20 @@ export class SLDEditor extends LitElement {
       connectionPreview.push(
         svg`<rect width="100%" height="100%" fill="url(#grid)"
       @click=${() => {
-        path[path.length - 1] = [x2, y2];
-        path.push([x3, y3]);
-        path.push([x4, y4]);
-        cleanPath(path);
-        this.requestUpdate();
-        if (targetEq && toTerminal)
-          this.dispatchEvent(
-            newConnectEvent({
-              from,
-              fromTerminal,
-              path,
-              to: targetEq,
-              toTerminal,
-            })
-          );
-      }} />`
+            path[path.length - 1] = [x2, y2];
+            path.push([x3, y3]);
+            path.push([x4, y4]);
+            cleanPath(path);
+            this.requestUpdate();
+            if (targetEq && toTerminal)
+              this.connectEquipment({
+                from,
+                fromTerminal,
+                path,
+                to: targetEq,
+                toTerminal,
+              });
+          }} />`
       );
     }
 
@@ -1672,7 +2021,7 @@ export class SLDEditor extends LitElement {
           label="Edit Substation"
           title="Edit Substation"
           @click=${() =>
-            this.dispatchEvent(newEditWizardEvent(this.substation))}
+        this.dispatchEvent(newEditWizardEvent(this.substation))}
           icon="edit"
         >
         </mwc-icon-button>
@@ -1695,7 +2044,7 @@ export class SLDEditor extends LitElement {
           label="Delete Substation"
           title="Delete Substation"
           @click=${() =>
-            this.dispatchEvent(newEditEventV2({ node: this.substation }))}
+        this.dispatchEvent(newEditEventV2({ node: this.substation }))}
           icon="delete"
         >
         </mwc-icon-button>
@@ -1717,15 +2066,15 @@ export class SLDEditor extends LitElement {
         stroke-width="0.06"
         fill="none"
         @mousemove=${(e: MouseEvent) => {
-          const [x, y] = this.svgCoordinates(e.clientX, e.clientY);
-          this.mouseX = Math.floor(x);
-          this.mouseY = Math.floor(y);
-          this.mouseX2 = Math.round(x * 2) / 2;
-          this.mouseY2 = Math.round(y * 2) / 2;
-          this.mouseX2f = Math.floor(x * 2) / 2;
-          this.mouseY2f = Math.floor(y * 2) / 2;
-          this.positionCoordinates(e);
-        }}
+        const [x, y] = this.svgCoordinates(e.clientX, e.clientY);
+        this.mouseX = Math.floor(x);
+        this.mouseY = Math.floor(y);
+        this.mouseX2 = Math.round(x * 2) / 2;
+        this.mouseY2 = Math.round(y * 2) / 2;
+        this.mouseX2f = Math.floor(x * 2) / 2;
+        this.mouseY2f = Math.floor(y * 2) / 2;
+        this.positionCoordinates(e);
+      }}
       >
         <style>
           @font-face {
@@ -1763,36 +2112,36 @@ export class SLDEditor extends LitElement {
         <rect width="100%" height="100%" fill="white" />
         ${placingTarget}
         ${Array.from(this.substation.children)
-          .filter(child => child.tagName === 'VoltageLevel')
-          .map(vl => svg`${this.renderContainer(vl)}`)}
+        .filter(child => child.tagName === 'VoltageLevel')
+        .map(vl => svg`${this.renderContainer(vl)}`)}
         ${connectionPreview}
         ${this.connecting?.from.closest('Substation') === this.substation
-          ? Array.from(
-              this.substation.querySelectorAll('ConductingEquipment')
-            ).map(eq => this.renderEquipment(eq, { connect: true }))
-          : nothing}
+        ? Array.from(
+          this.substation.querySelectorAll('ConductingEquipment')
+        ).map(eq => this.renderEquipment(eq, { connect: true }))
+        : nothing}
         ${Array.from(this.substation.querySelectorAll('ConnectivityNode'))
-          .filter(
-            node =>
-              node.getAttribute('name') !== 'grounded' &&
-              !(
-                this.placing &&
-                node.closest(this.placing.tagName) === this.placing
-              ) &&
-              !isBusBar(node.parentElement!)
-          )
-          .map(cNode => this.renderConnectivityNode(cNode))}
+        .filter(
+          node =>
+            node.getAttribute('name') !== 'grounded' &&
+            !(
+              this.placing &&
+              node.closest(this.placing.tagName) === this.placing
+            ) &&
+            !isBusBar(node.parentElement!)
+        )
+        .map(cNode => this.renderConnectivityNode(cNode))}
         ${Array.from(this.substation.querySelectorAll('ConnectivityNode'))
-          .filter(
-            node =>
-              node.getAttribute('name') !== 'grounded' &&
-              !(
-                this.placing &&
-                node.closest(this.placing.tagName) === this.placing
-              ) &&
-              isBusBar(node.parentElement!)
-          )
-          .map(cNode => this.renderConnectivityNode(cNode))}
+        .filter(
+          node =>
+            node.getAttribute('name') !== 'grounded' &&
+            !(
+              this.placing &&
+              node.closest(this.placing.tagName) === this.placing
+            ) &&
+            isBusBar(node.parentElement!)
+        )
+        .map(cNode => this.renderConnectivityNode(cNode))}
         ${Array.from(
           this.substation.querySelectorAll(':scope > PowerTransformer')
         ).map(transformer => this.renderPowerTransformer(transformer))}
@@ -1801,11 +2150,11 @@ export class SLDEditor extends LitElement {
             'VoltageLevel, Bay, ConductingEquipment, PowerTransformer, Text'
           )
         )
-          .filter(
-            e =>
-              !this.placing || e.closest(this.placing.tagName) !== this.placing
-          )
-          .map(element => this.renderLabel(element))}
+        .filter(
+          e =>
+            !this.placing || e.closest(this.placing.tagName) !== this.placing
+        )
+        .map(element => this.renderLabel(element))}
         ${transformerPlacingTarget} ${placingLabelTarget} ${placingElement}
       </svg>
       ${menu} ${coordinateTooltip}
@@ -1824,17 +2173,17 @@ export class SLDEditor extends LitElement {
             dialogInitialFocus
             autoValidate
             .validityTransform=${(value: string, validity: ValidityState) => {
-              const {
-                dim: [_w, oldH],
-              } = attributes(this.substation);
-              if (
-                validity.valid &&
-                !this.canResizeTo(this.substation, parseInt(value, 10), oldH)
-              ) {
-                return { valid: false, rangeUnderflow: true };
-              }
-              return {};
-            }}
+        const {
+          dim: [_w, oldH],
+        } = attributes(this.substation);
+        if (
+          validity.valid &&
+          !this.canResizeTo(this.substation, parseInt(value, 10), oldH)
+        ) {
+          return { valid: false, rangeUnderflow: true };
+        }
+        return {};
+      }}
           ></mwc-textfield>
           <mwc-textfield
             id="substationHeightUI"
@@ -1845,41 +2194,41 @@ export class SLDEditor extends LitElement {
             value="${h}"
             autoValidate
             .validityTransform=${(value: string, validity: ValidityState) => {
-              const {
-                dim: [oldW, _h],
-              } = attributes(this.substation);
-              if (
-                validity.valid &&
-                !this.canResizeTo(this.substation, oldW, parseInt(value, 10))
-              ) {
-                return { valid: false, rangeUnderflow: true };
-              }
-              return {};
-            }}
+        const {
+          dim: [oldW, _h],
+        } = attributes(this.substation);
+        if (
+          validity.valid &&
+          !this.canResizeTo(this.substation, oldW, parseInt(value, 10))
+        ) {
+          return { valid: false, rangeUnderflow: true };
+        }
+        return {};
+      }}
           ></mwc-textfield>
         </div>
         <mwc-button
           slot="primaryAction"
           @click=${() => {
-            const valid = Array.from(
-              this.resizeSubstationUI.querySelectorAll('mwc-textfield')
-            ).every(textField => textField.checkValidity());
-            if (!valid) return;
-            const {
-              dim: [oldW, oldH],
-            } = attributes(this.substation);
-            const [newW, newH] = [
-              this.substationWidthUI,
-              this.substationHeightUI,
-            ].map(ui => parseInt(ui.value ?? '1', 10).toString());
-            this.resizeSubstationUI.close();
-            if (newW === oldW.toString() && newH === oldH.toString()) return;
-            const resizeEdit = updateSLDAttributes(this.substation, this.nsp, {
-              w: newW,
-              h: newH,
-            });
-            this.dispatchEvent(newEditEventV2(resizeEdit));
-          }}
+        const valid = Array.from(
+          this.resizeSubstationUI.querySelectorAll('mwc-textfield')
+        ).every(textField => textField.checkValidity());
+        if (!valid) return;
+        const {
+          dim: [oldW, oldH],
+        } = attributes(this.substation);
+        const [newW, newH] = [
+          this.substationWidthUI,
+          this.substationHeightUI,
+        ].map(ui => parseInt(ui.value ?? '1', 10).toString());
+        this.resizeSubstationUI.close();
+        if (newW === oldW.toString() && newH === oldH.toString()) return;
+        const resizeEdit = updateSLDAttributes(this.substation, this.nsp, {
+          w: newW,
+          h: newH,
+        });
+        this.dispatchEvent(newEditEventV2(resizeEdit));
+      }}
           >resize</mwc-button
         >
         <mwc-button dialogAction="close" slot="secondaryAction"
@@ -1929,12 +2278,11 @@ export class SLDEditor extends LitElement {
     if (this.idle) {
       events = 'all';
       const offset = [this.mouseX2 - x - 0.5, this.mouseY2 - y + 0.5] as Point;
-      handleClick = () =>
-        this.dispatchEvent(newStartPlaceLabelEvent(element, offset));
+      handleClick = () => this.startPlacingLabel(element, offset);
     }
     const id =
       element.closest('Substation') === this.substation &&
-      element.tagName !== 'Text'
+        element.tagName !== 'Text'
         ? identity(element)
         : nothing;
     const classes = classMap({
@@ -1949,12 +2297,12 @@ export class SLDEditor extends LitElement {
           alignment-baseline="central"
           @mousedown=${preventDefault}
           @auxclick=${(e: MouseEvent) => {
-            if (e.button === 1) {
-              // middle mouse button
-              this.dispatchEvent(newEditWizardEvent(element));
-              e.preventDefault();
-            }
-          }}
+        if (e.button === 1) {
+          // middle mouse button
+          this.dispatchEvent(newEditWizardEvent(element));
+          e.preventDefault();
+        }
+      }}
           @click=${handleClick}
           @contextmenu=${(e: MouseEvent) => this.openMenu(element, e)}
           pointer-events="${events}" fill="${color}" font-weight="${weight}"
@@ -1989,14 +2337,7 @@ export class SLDEditor extends LitElement {
       w = Math.max(1, this.mouseX - x + 1);
       h = Math.max(1, this.mouseY - y + 1);
       if (this.canResizeTo(bayOrVL, w, h))
-        handleClick = () =>
-          this.dispatchEvent(
-            newResizeEvent({
-              w,
-              h,
-              element: bayOrVL,
-            })
-          );
+        handleClick = () => this.resizeContainer(bayOrVL, w, h);
       else invalid = true;
     }
 
@@ -2008,16 +2349,7 @@ export class SLDEditor extends LitElement {
       x = Math.min(this.mouseX, right);
       y = Math.min(this.mouseY, bottom);
       if (this.canResizeToTL(bayOrVL, x, y, w, h))
-        handleClick = () =>
-          this.dispatchEvent(
-            newResizeTLEvent({
-              x,
-              y,
-              w,
-              h,
-              element: bayOrVL,
-            })
-          );
+        handleClick = () => this.resizeContainerTL(bayOrVL, x, y, w, h);
       else invalid = true;
     }
 
@@ -2028,7 +2360,9 @@ export class SLDEditor extends LitElement {
         parent = Array.from(
           this.substation.querySelectorAll(':root > Substation > VoltageLevel')
         ).find(vl => containsRect(vl, x, y, w, h));
-      if (parent && this.canPlaceAt(bayOrVL, x, y, w, h))
+      if (!this.placing.parentElement && this.canPlaceAt(bayOrVL, x, y, w, h))
+        handleClick = () => this.placeNewContainer(bayOrVL, parent!, x, y);
+      else if (parent && this.canPlaceAt(bayOrVL, x, y, w, h)) {
         handleClick = () =>
           this.dispatchEvent(
             newPlaceEvent({
@@ -2038,7 +2372,7 @@ export class SLDEditor extends LitElement {
               parent: parent!,
             })
           );
-      else invalid = true;
+      } else invalid = true;
     }
 
     let placingTarget = svg``;
@@ -2061,20 +2395,20 @@ export class SLDEditor extends LitElement {
     const resizeBRHandle = this.idle
       ? svg`<svg xmlns="${svgNs}" height="1" width="1" fill="black"
           opacity="0.83" class="handle"
-          @click=${() => this.dispatchEvent(newStartResizeBREvent(bayOrVL))}
-          viewBox="0 96 960 960" x="${w + x - 1}" y="${h + y - 1}">
-          <rect fill="white" x="28.8" y="124.8" width="902.4" height="902.4" />
-          ${resizeBRPath}
-        </svg>`
+          @click=${() => this.startResizingBottomRight(bayOrVL)}
+  viewBox = "0 96 960 960" x = "${w + x - 1}" y = "${h + y - 1}" >
+    <rect fill="white" x = "28.8" y = "124.8" width = "902.4" height = "902.4" />
+      ${resizeBRPath}
+</svg>`
       : nothing;
     const resizeTLhandle = this.idle
       ? svg`<svg xmlns="${svgNs}" height="1" width="1" fill="black"
           opacity="0.83" class="handle"
-          @click=${() => this.dispatchEvent(newStartResizeTLEvent(bayOrVL))}
-          viewBox="0 96 960 960" x="${x}" y="${y}">
-          <rect fill="white" x="28.8" y="124.8" width="902.4" height="902.4" />
-          ${resizeTLPath}
-        </svg>`
+          @click=${() => this.startResizingTopLeft(bayOrVL)}
+  viewBox = "0 96 960 960" x = "${x}" y = "${y}" >
+    <rect fill="white" x = "28.8" y = "124.8" width = "902.4" height = "902.4" />
+      ${resizeTLPath}
+</svg>`
       : nothing;
 
     const clickthrough =
@@ -2083,32 +2417,30 @@ export class SLDEditor extends LitElement {
       this.resizingBR !== bayOrVL &&
       this.resizingTL !== bayOrVL;
 
-    return svg`<g id="${
-      bayOrVL.closest('Substation') === this.substation
+    return svg`<g id="${bayOrVL.closest('Substation') === this.substation
         ? identity(bayOrVL)
         : nothing
-    }" class=${classMap({
-      voltagelevel: isVL,
-      bay: !isVL,
-      preview,
-    })} tabindex="0" pointer-events="${
-      clickthrough ? 'none' : 'all'
-    }" style="outline: none;">
+      }" class=${classMap({
+        voltagelevel: isVL,
+        bay: !isVL,
+        preview,
+      })} tabindex="0" pointer-events="${clickthrough ? 'none' : 'all'
+      }" style="outline: none;">
       <rect x="${x}" y="${y}" width="${w}" height="${h}"
         @contextmenu=${(e: MouseEvent) => this.openMenu(bayOrVL, e)}
         @click=${handleClick || nothing} @mousedown=${preventDefault}
         @auxclick=${({ clientX, clientY, button }: MouseEvent) => {
-          if (button !== 1) return;
-          const mouse = this.svgCoordinates(clientX, clientY);
-          if (distance(mouse, [x, y]) < distance(mouse, [right, bottom]))
-            this.dispatchEvent(newStartResizeTLEvent(bayOrVL));
-          else this.dispatchEvent(newStartResizeBREvent(bayOrVL));
-        }}
+        if (button !== 1) return;
+        const mouse = this.svgCoordinates(clientX, clientY);
+        if (distance(mouse, [x, y]) < distance(mouse, [right, bottom]))
+          this.startResizingBottomRight(bayOrVL);
+        else this.startResizingBottomRight(bayOrVL);
+      }}
         fill="white" stroke-dasharray="${isVL ? nothing : '0.18'}"
         stroke="${
-          // eslint-disable-next-line no-nested-ternary
-          invalid ? '#BB1326' : isVL ? '#F5E214' : '#12579B'
-        }" />
+      // eslint-disable-next-line no-nested-ternary
+      invalid ? '#BB1326' : isVL ? '#F5E214' : '#12579B'
+      }" />
       ${Array.from(bayOrVL.children)
         .filter(isBay)
         .map(bay => this.renderContainer(bay))}
@@ -2118,23 +2450,21 @@ export class SLDEditor extends LitElement {
       ${Array.from(bayOrVL.children)
         .filter(child => child.tagName === 'PowerTransformer')
         .map(equipment => this.renderPowerTransformer(equipment))}
-      ${
-        preview
-          ? Array.from(bayOrVL.querySelectorAll('ConnectivityNode'))
-              .filter(child => child.getAttribute('name') !== 'grounded')
-              .map(cNode => this.renderConnectivityNode(cNode))
-          : nothing
+      ${preview
+        ? Array.from(bayOrVL.querySelectorAll('ConnectivityNode'))
+          .filter(child => child.getAttribute('name') !== 'grounded')
+          .map(cNode => this.renderConnectivityNode(cNode))
+        : nothing
       }
-      ${
-        preview
-          ? Array.from(
-              bayOrVL.querySelectorAll(
-                'Bay, ConductingEquipment, PowerTransformer, Text'
-              )
-            )
-              .concat(bayOrVL)
-              .map(element => this.renderLabel(element))
-          : nothing
+      ${preview
+        ? Array.from(
+          bayOrVL.querySelectorAll(
+            'Bay, ConductingEquipment, PowerTransformer, Text'
+          )
+        )
+          .concat(bayOrVL)
+          .map(element => this.renderLabel(element))
+        : nothing
       }
       ${resizeTLhandle}
       ${resizeBRHandle}
@@ -2167,11 +2497,11 @@ export class SLDEditor extends LitElement {
     const terminals: Partial<Record<'T1' | 'T2' | 'N1' | 'N2', Point>> = {};
     let arc:
       | {
-          from: Point;
-          fromCtl: Point;
-          to: Point;
-          toCtl: Point;
-        }
+        from: Point;
+        fromCtl: Point;
+        to: Point;
+        toCtl: Point;
+      }
       | undefined;
     let zigZagTransform: string | undefined;
     const terminalElements = Array.from(winding.children).filter(
@@ -2420,26 +2750,24 @@ export class SLDEditor extends LitElement {
         const fill = terminal ? 'BB1326' : '12579B';
         ports.push(svg`<circle class="port" cx="${x}" cy="${y}" r="0.2" opacity="0.4"
               @contextmenu=${(e: MouseEvent) => {
-                if (terminal) return;
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                if (!this.idle) return;
-                this.groundTerminal(winding, name as 'T1' | 'T2' | 'N1' | 'N2');
-              }}
+            if (terminal) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (!this.idle) return;
+            this.groundTerminal(winding, name as 'T1' | 'T2' | 'N1' | 'N2');
+          }}
               @click=${(e: MouseEvent) => {
-                e.stopImmediatePropagation();
-                if (!this.idle) return;
-                this.dispatchEvent(
-                  newStartConnectEvent({
-                    from: winding,
-                    fromTerminal: name as 'T1' | 'T2' | 'N1' | 'N2',
-                    path: [
-                      [x, y],
-                      [x1, y1],
-                    ],
-                  })
-                );
-              }}
+            e.stopImmediatePropagation();
+            if (!this.idle) return;
+            this.startConnecting({
+              from: winding,
+              fromTerminal: name as 'T1' | 'T2' | 'N1' | 'N2',
+              path: [
+                [x, y],
+                [x1, y1],
+              ],
+            });
+          }}
               fill="#${fill}"
               stroke="${groundable && !terminal ? '#F5E214' : fill}" />`);
       });
@@ -2459,8 +2787,7 @@ export class SLDEditor extends LitElement {
     }
     const tapChanger = winding.querySelector('TapChanger');
     const ltcArrow = tapChanger
-      ? svg`<line x1="${cx - 0.8}" y1="${cy + 0.8}" x2="${cx + 0.8}" y2="${
-          cy - (longArrow ? 1 : 0.8)
+      ? svg`<line x1="${cx - 0.8}" y1="${cy + 0.8}" x2="${cx + 0.8}" y2="${cy - (longArrow ? 1 : 0.8)
         }"
               stroke="black" stroke-width="0.06" marker-end="url(#arrow)" />`
       : nothing;
@@ -2497,52 +2824,51 @@ export class SLDEditor extends LitElement {
         pointer-events="all"
         @mousedown=${preventDefault}
         @auxclick=${(e: MouseEvent) => {
-          if (e.button === 1) {
-            // middle mouse button
-            this.dispatchEvent(newRotateEvent(transformer));
-            e.preventDefault();
-          }
-        }}
+        if (e.button === 1) {
+          // middle mouse button
+          this.rotateElement(transformer);
+          e.preventDefault();
+        }
+      }}
         @click=${(e: MouseEvent) => {
-          if (this.placing === transformer) {
-            const parent =
-              Array.from(
-                this.substation.querySelectorAll(':scope > VoltageLevel > Bay')
-              )
-                .concat(
-                  Array.from(
-                    this.substation.querySelectorAll(':scope > VoltageLevel')
-                  )
+        if (this.placing === transformer) {
+          const parent =
+            Array.from(
+              this.substation.querySelectorAll(':scope > VoltageLevel > Bay')
+            )
+              .concat(
+                Array.from(
+                  this.substation.querySelectorAll(':scope > VoltageLevel')
                 )
-                .find(vl => containsRect(vl, x, y, 1, 1)) || this.substation;
-            this.dispatchEvent(
-              newPlaceEvent({
-                element: transformer,
-                parent,
-                x,
-                y,
-              })
-            );
-          }
+              )
+              .find(vl => containsRect(vl, x, y, 1, 1)) || this.substation;
+          this.dispatchEvent(
+            newPlaceEvent({
+              element: transformer,
+              parent,
+              x,
+              y,
+            })
+          );
+        }
 
-          if (!this.idle) return;
+        if (!this.idle) return;
 
-          let placing = transformer;
-          if (e.shiftKey) placing = copy(transformer, this.nsp);
-          this.dispatchEvent(newStartPlaceEvent(placing, offset));
-        }}>
+        let placing = transformer;
+        if (e.shiftKey) placing = copy(transformer, this.nsp);
+        this.dispatchEvent(newStartPlaceEvent(placing, offset));
+      }}>
         ${windings.map(w => this.renderTransformerWinding(w))}
         ${clickTarget}
       </g>
-      <g class="preview">${
-        preview
-          ? [
-              this.renderLabel(transformer),
-              ...Array.from(transformer.querySelectorAll('Text')).map(text =>
-                this.renderLabel(text)
-              ),
-            ]
-          : nothing
+      <g class="preview">${preview
+        ? [
+          this.renderLabel(transformer),
+          ...Array.from(transformer.querySelectorAll('Text')).map(text =>
+            this.renderLabel(text)
+          ),
+        ]
+        : nothing
       }</g>`;
   }
 
@@ -2608,38 +2934,35 @@ export class SLDEditor extends LitElement {
 
     const topConnector =
       topTerminal ||
-      this.resizingBR ||
-      this.resizingTL ||
-      this.connecting ||
-      this.placingLabel ||
-      (this.placing && this.placing !== equipment)
+        this.resizingBR ||
+        this.resizingTL ||
+        this.connecting ||
+        this.placingLabel ||
+        (this.placing && this.placing !== equipment)
         ? nothing
         : svg`<circle class="port" cx="0.5" cy="0" r="0.2" opacity="0.4"
-      fill="#BB1326" stroke="#F5E214" pointer-events="${
-        this.placing ? 'none' : nothing
-      }"
+      fill="#BB1326" stroke="#F5E214" pointer-events="${this.placing ? 'none' : nothing
+          }"
     @click=${() =>
-      this.dispatchEvent(
-        newStartConnectEvent({
-          from: equipment,
-          fromTerminal: 'T1',
-          path: connectionStartPoints(equipment).T1,
-        })
-      )}
+            this.startConnecting({
+              from: equipment,
+              fromTerminal: 'T1',
+              path: connectionStartPoints(equipment).T1,
+            })}
     @contextmenu=${(e: MouseEvent) => {
-      e.preventDefault();
-      this.groundTerminal(equipment, 'T1');
-    }}
+            e.preventDefault();
+            this.groundTerminal(equipment, 'T1');
+          }}
       />`;
 
     const topIndicator =
       !this.connecting ||
-      this.connecting.from === equipment ||
-      (this.connecting &&
-        this.mouseX === x &&
-        this.mouseY === y &&
-        this.nearestOpenTerminal(equipment) === 'T1') ||
-      topTerminal
+        this.connecting.from === equipment ||
+        (this.connecting &&
+          this.mouseX === x &&
+          this.mouseY === y &&
+          this.nearestOpenTerminal(equipment) === 'T1') ||
+        topTerminal
         ? nothing
         : svg`<polygon points="0.3,0 0.7,0 0.5,0.4" 
                 fill="#BB1326" opacity="0.4" />`;
@@ -2652,40 +2975,37 @@ export class SLDEditor extends LitElement {
 
     const bottomConnector =
       bottomTerminal ||
-      this.resizingBR ||
-      this.resizingTL ||
-      this.connecting ||
-      this.placingLabel ||
-      (this.placing && this.placing !== equipment) ||
-      singleTerminal.has(eqType)
+        this.resizingBR ||
+        this.resizingTL ||
+        this.connecting ||
+        this.placingLabel ||
+        (this.placing && this.placing !== equipment) ||
+        singleTerminal.has(eqType)
         ? nothing
         : svg`<circle class="port" cx="0.5" cy="1" r="0.2" opacity="0.4"
-      fill="#BB1326" stroke="#F5E214" pointer-events="${
-        this.placing ? 'none' : nothing
-      }"
+      fill="#BB1326" stroke="#F5E214" pointer-events="${this.placing ? 'none' : nothing
+          }"
     @click=${() =>
-      this.dispatchEvent(
-        newStartConnectEvent({
-          from: equipment,
-          fromTerminal: 'T2',
-          path: connectionStartPoints(equipment).T2,
-        })
-      )}
-    @contextmenu=${(e: MouseEvent) => {
-      e.preventDefault();
-      this.groundTerminal(equipment, 'T2');
-    }}
+            this.startConnecting({
+              from: equipment,
+              fromTerminal: 'T2',
+              path: connectionStartPoints(equipment).T2,
+            })}
+@contextmenu=${(e: MouseEvent) => {
+            e.preventDefault();
+            this.groundTerminal(equipment, 'T2');
+          }}
       />`;
 
     const bottomIndicator =
       !this.connecting ||
-      this.connecting.from === equipment ||
-      (this.connecting &&
-        this.mouseX === x &&
-        this.mouseY === y &&
-        this.nearestOpenTerminal(equipment) === 'T2') ||
-      bottomTerminal ||
-      singleTerminal.has(eqType)
+        this.connecting.from === equipment ||
+        (this.connecting &&
+          this.mouseX === x &&
+          this.mouseY === y &&
+          this.nearestOpenTerminal(equipment) === 'T2') ||
+        bottomTerminal ||
+        singleTerminal.has(eqType)
         ? nothing
         : svg`<polygon points="0.3,1 0.7,1 0.5,0.6" 
                 fill="#BB1326" opacity="0.4" />`;
@@ -2702,34 +3022,30 @@ export class SLDEditor extends LitElement {
       equipment: true,
       preview: this.placing === equipment,
     })}"
-    id="${
-      equipment.closest('Substation') === this.substation
+    id="${equipment.closest('Substation') === this.substation
         ? identity(equipment)
         : nothing
-    }"
-    transform="translate(${x} ${y}) rotate(${deg} 0.5 0.5)${
-      flip ? ' scale(-1,1) translate(-1 0)' : ''
-    }">
+      }"
+    transform="translate(${x} ${y}) rotate(${deg} 0.5 0.5)${flip ? ' scale(-1,1) translate(-1 0)' : ''
+      }">
       <title>${equipment.getAttribute('name')}</title>
       ${icon}
-      ${
-        ringed
-          ? svg`<use transform="rotate(${-deg} 0.5 0.5)" pointer-events="none"
+      ${ringed
+        ? svg`<use transform="rotate(${-deg} 0.5 0.5)" pointer-events="none"
                   href="#${symbol}" xlink:href="#${symbol}" />`
-          : nothing
+        : nothing
       }
-      <rect width="1" height="1" fill="none" pointer-events="${
-        clickthrough ? 'none' : 'all'
+      <rect width="1" height="1" fill="none" pointer-events="${clickthrough ? 'none' : 'all'
       }"
         @mousedown=${preventDefault}
         @click=${handleClick}
         @auxclick=${(e: MouseEvent) => {
-          if (e.button === 1) {
-            // middle mouse button
-            this.dispatchEvent(newRotateEvent(equipment));
-            e.preventDefault();
-          }
-        }}
+        if (e.button === 1) {
+          // middle mouse button
+          this.rotateElement(equipment);
+          e.preventDefault();
+        }
+      }}
         @contextmenu=${(e: MouseEvent) => this.openMenu(equipment, e)}
       />
       ${topConnector}
@@ -2739,16 +3055,15 @@ export class SLDEditor extends LitElement {
       ${bottomIndicator}
       ${bottomGrounded}
     </g>
-    <g class="preview">${
-      preview
+    <g class="preview">${preview
         ? [
-            this.renderLabel(equipment),
-            ...Array.from(equipment.querySelectorAll('Text')).map(text =>
-              this.renderLabel(text)
-            ),
-          ]
+          this.renderLabel(equipment),
+          ...Array.from(equipment.querySelectorAll('Text')).map(text =>
+            this.renderLabel(text)
+          ),
+        ]
         : nothing
-    }</g>`;
+      }</g>`;
   }
 
   renderBusBar(busBar: Element) {
@@ -2760,27 +3075,31 @@ export class SLDEditor extends LitElement {
     placingTarget = svg`<rect x="${x}" y="${y}" width="${w}" height="${h}"
           pointer-events="all" fill="none" 
           @click=${() => {
-            const parent = Array.from(
-              this.substation.querySelectorAll(
-                ':root > Substation > VoltageLevel'
-              )
-            ).find(vl => containsRect(vl, x, y, w, h));
-            if (parent)
-              this.dispatchEvent(
-                newPlaceEvent({
-                  x,
-                  y,
-                  element: busBar,
-                  parent: parent!,
-                })
-              );
-          }}
+        const parent = Array.from(
+          this.substation.querySelectorAll(
+            ':root > Substation > VoltageLevel'
+          )
+        ).find(vl => containsRect(vl, x, y, w, h));
+
+        if (!parent) return;
+
+        if (!busBar.parentElement)
+          this.placeNewContainer(busBar, parent, x, y);
+        else
+          this.dispatchEvent(
+            newPlaceEvent({
+              x,
+              y,
+              element: busBar,
+              parent: parent!,
+            })
+          );
+      }}
         />`;
-    return svg`<g class="bus preview" id="${
-      busBar.closest('Substation') === this.substation
+    return svg`<g class="bus preview" id="${busBar.closest('Substation') === this.substation
         ? identity(busBar)
         : nothing
-    }">
+      }">
       <title>${busBar.getAttribute('name')}</title>
       ${this.renderLabel(busBar)}
       ${Array.from(busBar.querySelectorAll('Text')).map(text =>
@@ -2820,7 +3139,7 @@ export class SLDEditor extends LitElement {
     const targetSize = 0.5;
     const pointerEvents =
       !this.placing &&
-      (!this.resizingBR || (this.resizingBR === bay && isBusBar(bay)))
+        (!this.resizingBR || (this.resizingBR === bay && isBusBar(bay)))
         ? 'all'
         : 'none';
     sections.forEach(section => {
@@ -2843,7 +3162,7 @@ export class SLDEditor extends LitElement {
           handleClick = () =>
             this.dispatchEvent(newStartPlaceEvent(bay, offset));
           handleAuxClick = ({ button }: MouseEvent) => {
-            if (button === 1) this.dispatchEvent(newStartResizeBREvent(bay));
+            if (button === 1) this.startResizingBottomRight(bay);
           };
           handleContextMenu = (e: MouseEvent) => this.openMenu(bay, e);
         }
@@ -2875,14 +3194,16 @@ export class SLDEditor extends LitElement {
               else x2 += 1;
           }
           handleClick = () => {
+            this.resizeBusBar(bay, x2, y2);
+            /*
             this.dispatchEvent(
               newPlaceEvent({
                 parent: section,
                 element: vertices[vertices.length - 1],
                 x: x2,
                 y: y2,
-              })
-            );
+              }),
+            ); */
           };
           lines.push(svg`<rect x="${this.mouseX}" y="${this.mouseY}"
               width="1" height="1" fill="none" pointer-events="${pointerEvents}"
@@ -2921,14 +3242,12 @@ export class SLDEditor extends LitElement {
             path[path.length - 1] = [newX2, newY2];
             path.push([x3, y3]);
             cleanPath(path);
-            this.dispatchEvent(
-              newConnectEvent({
-                from,
-                fromTerminal,
-                path,
-                to: cNode,
-              })
-            );
+            this.connectEquipment({
+              from,
+              fromTerminal,
+              path,
+              to: cNode,
+            });
           };
 
         lines.push(

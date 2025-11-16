@@ -1,10 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<SCL xmlns="http://www.iec.ch/61850/2003/SCL" xmlns:esld="https://transpower.co.nz/SCL/SSD/SLD/v0" version="2007" revision="B">
+<SCL xmlns="http://www.iec.ch/61850/2003/SCL"
+  xmlns:esldoscd="https://openscd.org/SCL/SSD/SLD/v0" version="2007" revision="B">
   <Header id="development sample"/>
-  <Substation name="S1" esld:w="50" esld:h="25">
-    <VoltageLevel name="V1" esld:x="1" esld:y="1" esld:lx="1" esld:ly="1" esld:w="48" esld:h="22">
-      <Bay name="B2" esld:x="14" esld:y="2" esld:lx="14" esld:ly="2" esld:w="12" esld:h="20"/>
-      <Bay name="B1" esld:x="2" esld:y="2" esld:lx="2" esld:ly="2" esld:w="11" esld:h="20"/>
+  <Substation name="S1">
+    <Private type="OpenSCD-SLD-Layout">
+      <esldoscd:SLDAttributes esldoscd:w="50" esldoscd:h="25"/>
+    </Private>
+    <VoltageLevel name="V1">
+      <Private type="OpenSCD-SLD-Layout">
+        <esldoscd:SLDAttributes esldoscd:x="1" esldoscd:y="1" esldoscd:lx="1" esldoscd:ly="1" esldoscd:w="48" esldoscd:h="22"/>
+      </Private>
+      <Bay name="B2">
+        <Private type="OpenSCD-SLD-Layout">
+          <esldoscd:SLDAttributes esldoscd:x="14" esldoscd:y="2" esldoscd:lx="14" esldoscd:ly="2" esldoscd:w="12" esldoscd:h="20"/>
+        </Private>
+      </Bay>
+      <Bay name="B1">
+        <Private type="OpenSCD-SLD-Layout">
+          <esldoscd:SLDAttributes esldoscd:x="2" esldoscd:y="2" esldoscd:lx="2" esldoscd:ly="2" esldoscd:w="11" esldoscd:h="20"/>
+        </Private>
+      </Bay>
     </VoltageLevel>
   </Substation>
 </SCL>

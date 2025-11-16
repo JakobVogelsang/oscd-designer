@@ -253,11 +253,13 @@ describe('SLD Editor', () => {
   });
 
   describe('given a substation', () => {
+    let sldEditor: SLDEditor;
     beforeEach(async () => {
       element
         .shadowRoot!.querySelector<Button>('[label="Add Substation"]')
         ?.click();
       await element.updateComplete;
+      sldEditor = element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
     });
 
     it('zooms in on zoom in button click', async () => {
@@ -277,8 +279,6 @@ describe('SLD Editor', () => {
     });
 
     it('allows resizing substations', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       sldEditor.shadowRoot
         ?.querySelector<IconButton>('h2 > mwc-icon-button')
         ?.click();
@@ -306,12 +306,12 @@ describe('SLD Editor', () => {
         .to.have.property('tagName', 'VoltageLevel');
       await sendMouse({ type: 'click', position: [200, 252] });
       expect(element).to.have.property('placing', undefined);
-      expect(element)
+      expect(sldEditor)
         .property('resizingBR')
         .to.have.property('tagName', 'VoltageLevel');
       await sendMouse({ type: 'click', position: [400, 452] });
       await aTimeout(10); // Wait for quick machines
-      expect(element).to.have.property('resizingBR', undefined);
+      expect(sldEditor).to.have.property('resizingBR', undefined);
       const voltLv = element.doc.querySelector('VoltageLevel')!;
       expect(sldAttribute(voltLv, 'x')).to.equal('5');
       expect(sldAttribute(voltLv, 'y')).to.equal('3');
@@ -352,6 +352,7 @@ describe('SLD Editor', () => {
   });
 
   describe('given a voltage level', () => {
+    let sldEditor: SLDEditor;
     beforeEach(async () => {
       const doc = new DOMParser().parseFromString(
         voltageLevelDocString,
@@ -359,11 +360,10 @@ describe('SLD Editor', () => {
       );
       element.doc = doc;
       await element.updateComplete;
+      sldEditor = element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
     });
 
     it('forbids undersizing the substation', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       sldEditor.shadowRoot
         ?.querySelector<IconButton>('h2 > mwc-icon-button')
         ?.click();
@@ -377,15 +377,13 @@ describe('SLD Editor', () => {
     });
 
     it('allows resizing voltage levels', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const moveHandle =
         sldEditor.shadowRoot!.querySelectorAll<SVGElement>('.handle')[1];
       moveHandle.dispatchEvent(new PointerEvent('click'));
-      expect(element)
+      expect(sldEditor)
         .property('resizingBR')
         .to.exist.and.to.have.property('tagName', 'VoltageLevel');
-      const voltageLevel = element.resizingBR!;
+      const voltageLevel = sldEditor.resizingBR!;
       expect(sldAttribute(voltageLevel, 'w')).to.equal('48');
       expect(sldAttribute(voltageLevel, 'h')).to.equal('23');
       await sendMouse({ type: 'click', position: [300, 362] });
@@ -424,20 +422,18 @@ describe('SLD Editor', () => {
         ui: 'rect',
       }).dispatchEvent(new PointerEvent('contextmenu'));
       await element.updateComplete;
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const item = sldEditor.shadowRoot!.querySelector<ListItem>(
         'mwc-list-item:nth-of-type(2)'
       )!;
       item.selected = true;
       await element.updateComplete;
-      expect(element)
+      expect(sldEditor)
         .property('resizingBR')
         .to.exist.and.to.have.property('tagName', 'VoltageLevel');
-      const voltageLevel = element.resizingBR!;
+      const voltageLevel = sldEditor.resizingBR!;
       expect(sldAttribute(voltageLevel, 'w')).to.equal('48');
       expect(sldAttribute(voltageLevel, 'h')).to.equal('23');
-      await sendMouse({ type: 'click', position: [300, 352] });
+      await sendMouse({ type: 'click', position: [300, 362] });
       expect(sldAttribute(voltageLevel, 'w')).to.equal('8');
       expect(sldAttribute(voltageLevel, 'h')).to.equal('7');
     });
@@ -447,8 +443,6 @@ describe('SLD Editor', () => {
         scl: 'VoltageLevel',
         ui: 'rect',
       });
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
 
       // Move mouse to voltage level position [1,1] to establish coordinates
       await sendMouse({ type: 'move', position: [64, 164] });
@@ -488,8 +482,6 @@ describe('SLD Editor', () => {
         scl: 'VoltageLevel',
         ui: 'rect',
       }).dispatchEvent(new PointerEvent('contextmenu'));
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       await element.updateComplete;
       sldEditor.shadowRoot!.querySelector<ListItem>(
         'mwc-list-item:nth-last-of-type(2)'
@@ -505,14 +497,12 @@ describe('SLD Editor', () => {
         scl: 'VoltageLevel',
         ui: 'rect',
       }).dispatchEvent(new PointerEvent('contextmenu'));
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       await element.updateComplete;
       sldEditor.shadowRoot!.querySelector<ListItem>(
         'mwc-list-item:nth-last-of-type(4)'
       )!.selected = true;
       await sldEditor.updateComplete;
-      expect(element)
+      expect(sldEditor)
         .property('placingLabel')
         .to.have.property('tagName', 'VoltageLevel');
       await sendMouse({ type: 'click', position: [200, 252] });
@@ -540,7 +530,7 @@ describe('SLD Editor', () => {
     it('moves the voltage level label on label left click', async () => {
       // Click on label to start placing/moving it
       queryUI({ ui: '.label text' }).dispatchEvent(new PointerEvent('click'));
-      expect(element)
+      expect(sldEditor)
         .property('placingLabel')
         .to.have.property('tagName', 'VoltageLevel');
       // Click to place label at position [5, 4.5]
@@ -562,11 +552,11 @@ describe('SLD Editor', () => {
     it('allows placing a new bay', async () => {
       element.shadowRoot!.querySelector<Button>('[label="Add Bay"]')?.click();
       expect(element).property('placing').to.have.property('tagName', 'Bay');
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       await sendMouse({ type: 'click', position: [200, 252] });
       expect(element).to.have.property('placing', undefined);
-      expect(element).property('resizingBR').to.have.property('tagName', 'Bay');
+      expect(sldEditor)
+        .property('resizingBR')
+        .to.have.property('tagName', 'Bay');
       await sendMouse({ type: 'click', position: [400, 500] });
       expect(sldEditor).to.have.property('resizingBR', undefined);
       const bay = element.doc.querySelector('Bay')!;
@@ -582,11 +572,11 @@ describe('SLD Editor', () => {
         .shadowRoot!.querySelector<Button>('[label="Add Bus Bar"]')
         ?.click();
       expect(element).property('placing').to.have.property('tagName', 'Bay');
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       await sendMouse({ type: 'click', position: [200, 252] });
       expect(element).to.have.property('placing', undefined);
-      expect(element).property('resizingBR').to.have.property('tagName', 'Bay');
+      expect(sldEditor)
+        .property('resizingBR')
+        .to.have.property('tagName', 'Bay');
       await sendMouse({ type: 'click', position: [400, 452] });
       expect(sldEditor).to.have.property('resizingBR', undefined);
       const bus = element.doc.querySelector('Bay');
@@ -602,6 +592,7 @@ describe('SLD Editor', () => {
   });
 
   describe('given a bay', () => {
+    let sldEditor: SLDEditor;
     beforeEach(async () => {
       const doc = new DOMParser().parseFromString(
         bayDocString,
@@ -609,18 +600,17 @@ describe('SLD Editor', () => {
       );
       element.doc = doc;
       await element.updateComplete;
+      sldEditor = element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
     });
 
     it('allows resizing bays', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const moveHandle =
         sldEditor.shadowRoot!.querySelectorAll<SVGElement>('g.bay .handle')[1];
       moveHandle.dispatchEvent(new PointerEvent('click'));
-      expect(element)
+      expect(sldEditor)
         .property('resizingBR')
         .to.exist.and.to.have.property('tagName', 'Bay');
-      const bay = element.resizingBR!;
+      const bay = sldEditor.resizingBR!;
       expect(sldAttribute(bay, 'w')).to.equal('3');
       expect(sldAttribute(bay, 'h')).to.equal('3');
       await sendMouse({ type: 'click', position: [384, 516] });
@@ -642,8 +632,6 @@ describe('SLD Editor', () => {
         scl: 'Bay',
         ui: 'rect',
       }).dispatchEvent(new PointerEvent('contextmenu'));
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       await element.updateComplete;
       sldEditor.shadowRoot!.querySelector<ListItem>(
         'mwc-list-item:nth-last-of-type(2)'
@@ -653,15 +641,13 @@ describe('SLD Editor', () => {
     });
 
     it('forbids resizing bays out of bounds', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const moveHandle =
         sldEditor.shadowRoot!.querySelectorAll<SVGElement>('g.bay .handle')[1];
       moveHandle.dispatchEvent(new PointerEvent('click'));
-      expect(element)
+      expect(sldEditor)
         .property('resizingBR')
         .to.exist.and.to.have.property('tagName', 'Bay');
-      const bay = element.resizingBR!;
+      const bay = sldEditor.resizingBR!;
       expect(sldAttribute(bay, 'w')).to.equal('3');
       expect(sldAttribute(bay, 'h')).to.equal('3');
       await sendMouse({ type: 'click', position: [600, 452] });
@@ -670,16 +656,14 @@ describe('SLD Editor', () => {
     });
 
     it('forbids undersizing voltage levels containing bays', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const moveHandle = sldEditor.shadowRoot!.querySelectorAll<SVGElement>(
         'g.voltagelevel > .handle'
       )[1];
       moveHandle.dispatchEvent(new PointerEvent('click'));
-      expect(element)
+      expect(sldEditor)
         .property('resizingBR')
         .to.exist.and.to.have.property('tagName', 'VoltageLevel');
-      const voltageLevel = element.resizingBR!;
+      const voltageLevel = sldEditor.resizingBR!;
       expect(sldAttribute(voltageLevel, 'w')).to.equal('13');
       expect(sldAttribute(voltageLevel, 'h')).to.equal('13');
       await sendMouse({ type: 'click', position: [100, 152] });
@@ -705,8 +689,6 @@ describe('SLD Editor', () => {
       );
       await element.updateComplete;
 
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       sldEditor.shadowRoot!.querySelector<ListItem>(
         'mwc-list-item:nth-of-type(4)'
       )!.selected = true;
@@ -806,7 +788,7 @@ describe('SLD Editor', () => {
         .to.have.property('tagName', 'ConductingEquipment');
       await sendMouse({ type: 'click', position: [160, 324] });
       expect(element).to.have.property('placing', undefined);
-      expect(element).to.have.property('resizingBR', undefined);
+      expect(sldEditor).to.have.property('resizingBR', undefined);
       const equipment = element.doc.querySelector('ConductingEquipment');
       expect(equipment).to.exist;
       expect(sldAttribute(equipment!, 'x')).to.equal('4');
@@ -823,17 +805,15 @@ describe('SLD Editor', () => {
       });
 
       it('allows the bay to overlap its sibling bus bar', async () => {
-        const sldEditor =
-          element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
         const moveHandle =
           sldEditor.shadowRoot!.querySelectorAll<SVGElement>(
             'g.bay .handle'
           )[1];
         moveHandle.dispatchEvent(new PointerEvent('click'));
-        expect(element)
+        expect(sldEditor)
           .property('resizingBR')
           .to.exist.and.to.have.property('tagName', 'Bay');
-        const bay = element.resizingBR!;
+        const bay = sldEditor.resizingBR!;
         expect(sldAttribute(bay, 'w')).to.equal('3');
         expect(sldAttribute(bay, 'h')).to.equal('3');
         await sendMouse({ type: 'click', position: [384, 516] });
@@ -860,8 +840,6 @@ describe('SLD Editor', () => {
         );
         await element.updateComplete;
 
-        const sldEditor =
-          element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
         sldEditor.shadowRoot!.querySelector<ListItem>(
           'mwc-list-item:nth-of-type(3)'
         )!.selected = true;
@@ -889,8 +867,6 @@ describe('SLD Editor', () => {
         );
         await element.updateComplete;
 
-        const sldEditor =
-          element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
         sldEditor.shadowRoot!.querySelector<ListItem>(
           'mwc-list-item:nth-of-type(2)'
         )!.selected = true;
@@ -906,6 +882,7 @@ describe('SLD Editor', () => {
   });
 
   describe('given conducting equipment', () => {
+    let sldEditor: SLDEditor;
     beforeEach(async () => {
       const doc = new DOMParser().parseFromString(
         equipmentDocString,
@@ -913,6 +890,7 @@ describe('SLD Editor', () => {
       );
       element.doc = doc;
       await element.updateComplete;
+      sldEditor = element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
     });
 
     it('requests equipment edit wizard on edit menu item select', async () => {
@@ -920,8 +898,6 @@ describe('SLD Editor', () => {
         scl: '[type="SMC"]',
         ui: 'rect',
       }).dispatchEvent(new PointerEvent('contextmenu'));
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       await element.updateComplete;
       sldEditor.shadowRoot!.querySelector<ListItem>(
         'mwc-list-item:nth-last-of-type(2)'
@@ -937,14 +913,12 @@ describe('SLD Editor', () => {
         scl: 'ConductingEquipment',
         ui: 'rect',
       }).dispatchEvent(new PointerEvent('contextmenu'));
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       await element.updateComplete;
       sldEditor.shadowRoot!.querySelector<ListItem>(
         'mwc-list-item:nth-last-of-type(4)'
       )!.selected = true;
       await sldEditor.updateComplete;
-      expect(element)
+      expect(sldEditor)
         .property('placingLabel')
         .to.have.property('tagName', 'ConductingEquipment');
       await sendMouse({ type: 'click', position: [200, 308] });
@@ -967,8 +941,6 @@ describe('SLD Editor', () => {
     });
 
     it('copies equipment on shift click', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment');
       const id = identity(equipment);
       const eqClickTarget = sldEditor
@@ -1000,8 +972,6 @@ describe('SLD Editor', () => {
     });
 
     it('rotates equipment on middle mouse button click', () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment');
       const id = identity(equipment);
       const eqClickTarget = sldEditor
@@ -1022,8 +992,6 @@ describe('SLD Editor', () => {
     });
 
     it('flips equipment on mirror menu item select', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment');
       const id = identity(equipment);
       let eqClickTarget = sldEditor
@@ -1053,8 +1021,6 @@ describe('SLD Editor', () => {
     });
 
     it('rotates equipment on rotate menu item select', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment');
       const id = identity(equipment);
       const eqClickTarget = sldEditor
@@ -1072,8 +1038,6 @@ describe('SLD Editor', () => {
     });
 
     it('moves equipment on move menu item select', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment');
       const id = identity(equipment);
       const eqClickTarget = sldEditor
@@ -1113,8 +1077,6 @@ describe('SLD Editor', () => {
     });
 
     it('grounds equipment on connection point right click', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment')!;
       const eqClickTarget = sldEditor
         .shadowRoot!.getElementById(<string>identity(equipment))!
@@ -1143,8 +1105,6 @@ describe('SLD Editor', () => {
     });
 
     it('grounds equipment on ground menu item select', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment')!;
       queryUI({ scl: 'ConductingEquipment', ui: 'rect' }).dispatchEvent(
         new PointerEvent('contextmenu')
@@ -1177,8 +1137,6 @@ describe('SLD Editor', () => {
     });
 
     it('connects equipment on connection point and equipment click', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelectorAll('ConductingEquipment')[0];
       const eqClickTarget = sldEditor
         .shadowRoot!.getElementById(<string>identity(equipment))!
@@ -1200,8 +1158,6 @@ describe('SLD Editor', () => {
     });
 
     it('connects equipment on connect menu item select', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       let equipment = element.doc.querySelector('ConductingEquipment')!;
       queryUI({ scl: 'ConductingEquipment', ui: 'rect' }).dispatchEvent(
         new PointerEvent('contextmenu')
@@ -1260,8 +1216,6 @@ describe('SLD Editor', () => {
     });
 
     it('will not connect equipment directly to itself', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment');
       const eqClickTarget = sldEditor
         .shadowRoot!.getElementById(<string>identity(equipment))!
@@ -1278,8 +1232,6 @@ describe('SLD Editor', () => {
     });
 
     it('retargets grounded terminals when reparenting equipment', async () => {
-      const sldEditor =
-        element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
       const equipment = element.doc.querySelector('ConductingEquipment');
       const eqClickTarget = sldEditor
         .shadowRoot!.getElementById(<string>identity(equipment))!
@@ -1310,8 +1262,6 @@ describe('SLD Editor', () => {
 
     describe('with established connectivity', () => {
       beforeEach(async () => {
-        const sldEditor =
-          element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
         const equipment = element.doc.querySelector('ConductingEquipment');
         const eqClickTarget = sldEditor
           .shadowRoot!.getElementById(<string>identity(equipment))!
@@ -1330,8 +1280,6 @@ describe('SLD Editor', () => {
       });
 
       it('uniquely names new connectivity nodes', async () => {
-        const sldEditor =
-          element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
         const equipment = element.doc.querySelector('ConductingEquipment');
         const eqClickTarget = sldEditor
           .shadowRoot!.getElementById(<string>identity(equipment))!
@@ -1359,8 +1307,6 @@ describe('SLD Editor', () => {
       });
 
       it('connects equipment on connection point and connectivity node click', async () => {
-        const sldEditor =
-          element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
         const equipment = element.doc.querySelector(
           'ConductingEquipment[type="CTR"]'
         );
@@ -1388,8 +1334,6 @@ describe('SLD Editor', () => {
       });
 
       it('avoids short circuit connections', async () => {
-        const sldEditor =
-          element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
         const equipment = element.doc.querySelector(
           'ConductingEquipment[type="DIS"]'
         );
@@ -1413,8 +1357,6 @@ describe('SLD Editor', () => {
       });
 
       it('keeps connection paths simple', async () => {
-        const sldEditor =
-          element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
         const equipment = element.doc.querySelector(
           'ConductingEquipment[type="CTR"]'
         );
@@ -1492,8 +1434,6 @@ describe('SLD Editor', () => {
         });
 
         it('disconnects terminals on detach menu item select', async () => {
-          const sldEditor =
-            element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
           const equipment = element.doc.querySelector('[type="CTR"]')!;
           queryUI({ scl: '[type="CTR"]', ui: 'rect' }).dispatchEvent(
             new PointerEvent('contextmenu')
@@ -1650,8 +1590,6 @@ describe('SLD Editor', () => {
         });
 
         it('deletes conducting equipment on delete menu item select', async () => {
-          const sldEditor =
-            element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
           const equipment = element.doc.querySelector('[type="CTR"]')!;
           queryUI({ scl: '[type="CTR"]', ui: 'rect' }).dispatchEvent(
             new PointerEvent('contextmenu')
@@ -1669,8 +1607,6 @@ describe('SLD Editor', () => {
         });
 
         it('deletes bays on delete menu item select', async () => {
-          const sldEditor =
-            element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
           const bay = element.doc.querySelector('Bay')!;
           queryUI({ scl: 'Bay', ui: 'rect' }).dispatchEvent(
             new PointerEvent('contextmenu')
@@ -1688,8 +1624,6 @@ describe('SLD Editor', () => {
         });
 
         it('deletes voltage levels on delete menu item select', async () => {
-          const sldEditor =
-            element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
           const bay = element.doc.querySelector('[name="V2"]')!;
           queryUI({ scl: '[name="V2"]', ui: 'rect' }).dispatchEvent(
             new PointerEvent('contextmenu')
@@ -1795,8 +1729,6 @@ describe('SLD Editor', () => {
               ui: 'line:not([stroke])',
             }).dispatchEvent(new PointerEvent('contextmenu'));
             await element.updateComplete;
-            const sldEditor =
-              element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
             sldEditor.shadowRoot!.querySelector<ListItem>(
               'mwc-list-item:nth-of-type(2)'
             )!.selected = true;
@@ -1825,8 +1757,6 @@ describe('SLD Editor', () => {
               })
             );
             await element.updateComplete;
-            const sldEditor =
-              element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
             sldEditor.shadowRoot!.querySelector<ListItem>(
               'mwc-list-item:nth-last-of-type(6)'
             )!.selected = true;
@@ -1891,8 +1821,6 @@ describe('SLD Editor', () => {
             );
             await element.updateComplete;
 
-            const sldEditor =
-              element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
             sldEditor.shadowRoot!.querySelector<ListItem>(
               'mwc-list-item:nth-of-type(3)'
             )!.selected = true;
@@ -1912,14 +1840,12 @@ describe('SLD Editor', () => {
               scl: '[name="L"]',
               ui: 'line:not([stroke])',
             }).dispatchEvent(new PointerEvent('contextmenu'));
-            const sldEditor =
-              element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
             await element.updateComplete;
             sldEditor.shadowRoot!.querySelector<ListItem>(
               'mwc-list-item:nth-last-of-type(4)'
             )!.selected = true;
             await sldEditor.updateComplete;
-            expect(element)
+            expect(sldEditor)
               .property('placingLabel')
               .to.have.attribute('name', 'BB1');
             await sendMouse({ type: 'click', position: [200, 308] });
@@ -1933,8 +1859,6 @@ describe('SLD Editor', () => {
               scl: '[name="L"]',
               ui: 'line:not([stroke])',
             }).dispatchEvent(new PointerEvent('contextmenu'));
-            const sldEditor =
-              element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
             await element.updateComplete;
             sldEditor.shadowRoot!.querySelector<ListItem>(
               'mwc-list-item:nth-last-of-type(2)'
@@ -1952,8 +1876,6 @@ describe('SLD Editor', () => {
             }).dispatchEvent(new PointerEvent('contextmenu'));
             await element.updateComplete;
             expect(element.doc.querySelector('[name="BB1"]')).to.exist;
-            const sldEditor =
-              element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
             sldEditor.shadowRoot!.querySelector<ListItem>(
               'mwc-list-item:nth-last-of-type(1)'
             )!.selected = true;
@@ -1982,8 +1904,6 @@ describe('SLD Editor', () => {
               })
             );
             await element.updateComplete;
-            const sldEditor =
-              element.shadowRoot!.querySelector<SLDEditor>('sld-editor')!;
             sldEditor.shadowRoot!.querySelector<ListItem>(
               'mwc-list-item:nth-last-of-type(6)'
             )!.selected = true;
